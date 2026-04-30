@@ -1,0 +1,86 @@
+name: update-submodules (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      has_https_submodules:
+        description: 'Set to true if the repo has HTTPS submodule URLs that need PAT rewriting'
+        required: false
+        default: false
+        type: boolean
+      commit_message:
+        description: 'Commit message for the submodule update'
+        required: true
+        type: string
+      pr_title:
+        description: 'Title for the submodule update PR'
+        required: true
+        type: string
+      pr_branch:
+        description: 'Branch name for the submodule update PR'
+        required: true
+        type: string
+    secrets:
+      GH_PAT:
+        required: true
+      SUBMODULES_SSH_KEY:
+        required: true
+      SLACK_WEBHOOK_URL:
+        required: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.GH_PAT }}
+          submodules: false
+
+      - name: Configure SSH for submodule repos
+        env:
+          SUBMODULES_SSH_KEY: ${{ secrets.SUBMODULES_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          printf '%s\n' "$SUBMODULES_SSH_KEY" > ~/.ssh/submodules_key
+          chmod 600 ~/.ssh/submodules_key
+          git config --global core.sshCommand 'ssh -i ~/.ssh/submodules_key -o IdentitiesOnly=yes'
+
+      - name: Rewrite HTTPS submodule URLs to use PAT
+        if: inputs.has_https_submodules
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          git config --global url."https://x-access-token:${GH_PAT}@github.com/".insteadOf "https://github.com/"
+
+      - name: Initialise submodules
+        run: git submodule update --init
+
+      - name: Advance each submodule to latest remote HEAD
+        run: git submodule update --remote
+
+      - name: Open PR if submodules changed
+        id: cpr
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ secrets.GH_PAT }}
+          commit-message: ${{ inputs.commit_message }}
+          title: ${{ inputs.pr_title }}
+          body: |
+            Automated submodule bump. CI must pass before merge.
+
+            Updated by the `update-submodules` workflow.
+          branch: ${{ inputs.pr_branch }}
+          delete-branch: true
+
+      - name: Notify Slack
+        if: steps.cpr.outputs.pull-request-url && secrets.SLACK_WEBHOOK_URL
+        run: |
+          curl -sf -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d "{\"text\":\"📦 Submodule update PR ($REPO): $PR_URL\"}"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          PR_URL: ${{ steps.cpr.outputs.pull-request-url }}
+          REPO: ${{ github.repository }}

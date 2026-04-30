@@ -5,6 +5,8 @@ on:
     secrets:
       GH_PAT:
         required: true
+      SLACK_WEBHOOK_URL:
+        required: false
 
 jobs:
   update:
@@ -23,6 +25,7 @@ jobs:
         run: uv lock --upgrade-package create-benchmark-service
 
       - uses: peter-evans/create-pull-request@v8
+        id: cpr
         with:
           token: ${{ secrets.GH_PAT }}
           commit-message: 'chore: update create-benchmark-service lockfile'
@@ -32,3 +35,14 @@ jobs:
             Tests, lint, and typecheck must pass before merge.
           branch: chore/update-cbs-lockfile
           delete-branch: true
+
+      - name: Notify Slack
+        if: steps.cpr.outputs.pull-request-url && secrets.SLACK_WEBHOOK_URL
+        run: |
+          curl -sf -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d "{\"text\":\"📦 Lockfile update PR ($REPO): $PR_URL\"}"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          PR_URL: ${{ steps.cpr.outputs.pull-request-url }}
+          REPO: ${{ github.repository }}
