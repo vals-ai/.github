@@ -2,9 +2,37 @@ name: update-lockfile (reusable)
 
 on:
   workflow_call:
+    inputs:
+      package:
+        description: 'Package name to upgrade in the lockfile'
+        required: false
+        default: 'create-benchmark-service'
+        type: string
+      working_directory:
+        description: 'Directory containing the pyproject.toml and uv.lock to update'
+        required: false
+        default: '.'
+        type: string
+      commit_message:
+        description: 'Commit message for the lockfile update'
+        required: false
+        default: ''
+        type: string
+      pr_title:
+        description: 'Title for the lockfile update PR'
+        required: false
+        default: ''
+        type: string
+      pr_branch:
+        description: 'Branch name for the lockfile update PR'
+        required: false
+        default: ''
+        type: string
     secrets:
       GH_PAT:
         required: true
+      SUBMODULES_SSH_KEY:
+        required: false
       SLACK_WEBHOOK_URL:
         required: false
 
@@ -16,24 +44,36 @@ jobs:
         with:
           token: ${{ secrets.GH_PAT }}
 
+      - name: Configure SSH for private git dependencies
+        env:
+          SUBMODULES_SSH_KEY: ${{ secrets.SUBMODULES_SSH_KEY }}
+        if: env.SUBMODULES_SSH_KEY != ''
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          printf '%s\n' "$SUBMODULES_SSH_KEY" > ~/.ssh/submodules_key
+          chmod 600 ~/.ssh/submodules_key
+          git config --global core.sshCommand 'ssh -i ~/.ssh/submodules_key -o IdentitiesOnly=yes'
+
       - uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
-      - name: Upgrade create-benchmark-service in lockfile
-        run: uv lock --upgrade-package create-benchmark-service
+      - name: Upgrade ${{ inputs.package }} in lockfile
+        working-directory: ${{ inputs.working_directory }}
+        run: uv lock --upgrade-package ${{ inputs.package }}
 
       - uses: peter-evans/create-pull-request@v8
         id: cpr
         with:
           token: ${{ secrets.GH_PAT }}
-          commit-message: 'chore: update create-benchmark-service lockfile'
-          title: 'chore: update create-benchmark-service lockfile'
+          commit-message: ${{ inputs.commit_message || format('chore: update {0} lockfile', inputs.package) }}
+          title: ${{ inputs.pr_title || format('chore: update {0} lockfile', inputs.package) }}
           body: |
-            Automated `uv.lock` bump for `create-benchmark-service`.
+            Automated `uv.lock` bump for `${{ inputs.package }}`.
             Tests, lint, and typecheck must pass before merge.
-          branch: chore/update-cbs-lockfile
+          branch: ${{ inputs.pr_branch || format('chore/update-{0}-lockfile', inputs.package) }}
           delete-branch: true
 
       - name: Notify Slack
