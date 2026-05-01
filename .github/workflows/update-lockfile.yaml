@@ -37,7 +37,7 @@ jobs:
           delete-branch: true
 
       - name: Notify Slack
-        if: steps.cpr.outputs.pull-request-url
+        if: steps.cpr.outputs.pull-request-operation == 'created'
         run: |
           [ -z "$SLACK_WEBHOOK_URL" ] && exit 0
           curl -sf -X POST "$SLACK_WEBHOOK_URL" \
