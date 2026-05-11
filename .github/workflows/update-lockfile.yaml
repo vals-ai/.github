@@ -21,17 +21,39 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
-      - name: Upgrade create-benchmark-service in lockfile
-        run: uv lock --upgrade-package create-benchmark-service
+      - name: Find latest create-benchmark-service tag
+        id: latest-tag
+        run: |
+          TAG=$(git ls-remote --tags --sort=-version:refname \
+            https://github.com/vals-ai/create-benchmark-service.git 'refs/tags/v*' \
+            | grep -v '\^{}$' | head -1 | awk '{print $2}' | sed 's|refs/tags/||')
+          if [ -z "$TAG" ]; then
+            echo "::warning::No tags found for create-benchmark-service"
+          else
+            echo "Latest tag: $TAG"
+          fi
+          echo "tag=${TAG:-}" >> "$GITHUB_OUTPUT"
+
+      - name: Update framework pin to latest tag
+        if: steps.latest-tag.outputs.tag != ''
+        env:
+          TAG: ${{ steps.latest-tag.outputs.tag }}
+        run: |
+          sed -i "s|create-benchmark-service\.git@[^\"]*|create-benchmark-service.git@${TAG}|" pyproject.toml
+
+      - name: Update lockfile
+        if: steps.latest-tag.outputs.tag != ''
+        run: uv lock
 
       - uses: peter-evans/create-pull-request@v8
+        if: steps.latest-tag.outputs.tag != ''
         id: cpr
         with:
           token: ${{ secrets.GH_PAT }}
-          commit-message: 'chore: update create-benchmark-service lockfile'
-          title: 'chore: update create-benchmark-service lockfile'
+          commit-message: 'chore: bump create-benchmark-service to ${{ steps.latest-tag.outputs.tag }}'
+          title: 'chore: bump create-benchmark-service to ${{ steps.latest-tag.outputs.tag }}'
           body: |
-            Automated `uv.lock` bump for `create-benchmark-service`.
+            Automated bump of `create-benchmark-service` to `${{ steps.latest-tag.outputs.tag }}`.
             Tests, lint, and typecheck must pass before merge.
           branch: chore/update-cbs-lockfile
           delete-branch: true
