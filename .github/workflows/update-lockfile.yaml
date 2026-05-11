@@ -42,9 +42,11 @@ jobs:
           sed -i "s|create-benchmark-service\.git@[^\"]*|create-benchmark-service.git@${TAG}|" pyproject.toml
 
       - name: Update lockfile
+        if: steps.latest-tag.outputs.tag != ''
         run: uv lock
 
       - uses: peter-evans/create-pull-request@v8
+        if: steps.latest-tag.outputs.tag != ''
         id: cpr
         with:
           token: ${{ secrets.GH_PAT }}
