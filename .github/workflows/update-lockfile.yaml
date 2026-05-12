@@ -21,6 +21,12 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
+      - name: Detect current framework pin
+        id: current-pin
+        run: |
+          REF=$(sed -n 's|.*create-benchmark-service\.git@\([^"]*\).*|\1|p' pyproject.toml | head -1)
+          echo "ref=${REF:-}" >> "$GITHUB_OUTPUT"
+
       - name: Find latest create-benchmark-service tag
         id: latest-tag
         run: |
@@ -33,6 +39,35 @@ jobs:
             echo "Latest tag: $TAG"
           fi
           echo "tag=${TAG:-}" >> "$GITHUB_OUTPUT"
+
+      - name: Build changelog
+        id: changelog
+        if: steps.latest-tag.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          CURRENT_REF: ${{ steps.current-pin.outputs.ref }}
+          LATEST_TAG: ${{ steps.latest-tag.outputs.tag }}
+        run: |
+          if [[ "$CURRENT_REF" =~ ^v[0-9] ]] && [ "$CURRENT_REF" != "$LATEST_TAG" ]; then
+            BODY=$(curl -sf -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/vals-ai/create-benchmark-service/compare/${CURRENT_REF}...${LATEST_TAG}" \
+              | jq -r '[.commits[].commit.message | split("\n")[0] | select(test("#[0-9]+"))] | map("- " + .) | join("\n")')
+            {
+              echo "body<<EOF"
+              echo "### Changes since \`${CURRENT_REF}\`"
+              echo ""
+              echo "${BODY}"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          elif [[ ! "$CURRENT_REF" =~ ^v[0-9] ]]; then
+            {
+              echo "body<<EOF"
+              echo "Initial migration from \`@${CURRENT_REF}\` to tagged releases."
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "body=" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Update framework pin to latest tag
         if: steps.latest-tag.outputs.tag != ''
@@ -53,7 +88,10 @@ jobs:
           commit-message: 'chore: bump create-benchmark-service to ${{ steps.latest-tag.outputs.tag }}'
           title: 'chore: bump create-benchmark-service to ${{ steps.latest-tag.outputs.tag }}'
           body: |
-            Automated bump of `create-benchmark-service` to `${{ steps.latest-tag.outputs.tag }}`.
+            Automated bump of `create-benchmark-service` from `${{ steps.current-pin.outputs.ref }}` to `${{ steps.latest-tag.outputs.tag }}`.
+
+            ${{ steps.changelog.outputs.body }}
+
             Tests, lint, and typecheck must pass before merge.
           branch: chore/update-cbs-lockfile
           delete-branch: true
