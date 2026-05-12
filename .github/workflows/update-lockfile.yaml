@@ -61,11 +61,29 @@ jobs:
               echo "EOF"
             } >> "$GITHUB_OUTPUT"
           elif [[ ! "$CURRENT_REF" =~ ^v[0-9] ]]; then
-            {
-              echo "body<<EOF"
-              echo "Initial migration from \`@${CURRENT_REF}\` to tagged releases."
-              echo "EOF"
-            } >> "$GITHUB_OUTPUT"
+            FIRST_TAG=$(git ls-remote --tags --sort=version:refname \
+              https://github.com/vals-ai/create-benchmark-service.git 'refs/tags/v*' \
+              | grep -v '\^{}$' | head -1 | awk '{print $2}' | sed 's|refs/tags/||')
+            if [ -n "$FIRST_TAG" ] && [ "$FIRST_TAG" != "$LATEST_TAG" ]; then
+              BODY=$(curl -sf -H "Authorization: Bearer $GH_TOKEN" \
+                "https://api.github.com/repos/vals-ai/create-benchmark-service/compare/${FIRST_TAG}...${LATEST_TAG}" \
+                | jq -r '[.commits[].commit.message | split("\n")[0] | select(test("#[0-9]+"))] | map("- " + .) | join("\n")')
+              {
+                echo "body<<EOF"
+                echo "Migrating from \`@${CURRENT_REF}\` to tagged releases."
+                echo ""
+                echo "### Changes since \`${FIRST_TAG}\`"
+                echo ""
+                echo "${BODY}"
+                echo "EOF"
+              } >> "$GITHUB_OUTPUT"
+            else
+              {
+                echo "body<<EOF"
+                echo "Migrating from \`@${CURRENT_REF}\` to tagged releases (\`${LATEST_TAG}\`)."
+                echo "EOF"
+              } >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "body=" >> "$GITHUB_OUTPUT"
           fi
