@@ -6,17 +6,17 @@ on:
       days-before-pr-stale:
         description: 'Days of inactivity before a PR is marked stale.'
         required: false
-        default: 6
+        default: 7
         type: number
       days-before-pr-close:
         description: 'Days after a PR is marked stale before it is closed.'
         required: false
-        default: 1
+        default: 4
         type: number
       stale-pr-message:
         description: 'Comment posted to the PR thread when it is marked stale.'
         required: false
-        default: 'This pull request has had no activity for 6 days. It will be closed automatically in 1 day unless there is new activity.'
+        default: 'This pull request has had no activity for 7 days. It will be closed automatically in 4 days unless there is new activity.'
         type: string
       close-pr-message:
         description: 'Comment posted to the PR thread when it is closed for inactivity.'
