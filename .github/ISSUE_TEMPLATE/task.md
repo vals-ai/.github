@@ -1,7 +1,7 @@
 ---
 name: Task
 about: Track a task or item for future work
-type: task
+type: Task
 ---
 
 ## Context

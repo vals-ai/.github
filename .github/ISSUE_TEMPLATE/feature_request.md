@@ -1,7 +1,7 @@
 ---
 name: Feature Request
 about: Suggest a new feature or improvement
-type: feature
+type: Feature Request
 ---
 
 ## Problem / Motivation

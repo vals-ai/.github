@@ -1,7 +1,7 @@
 ---
 name: Bug Report
 about: Something is broken or behaving unexpectedly
-type: bug
+type: Bug Report
 ---
 
 ## Describe the Bug
