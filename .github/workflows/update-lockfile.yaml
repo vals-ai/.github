@@ -22,6 +22,15 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
+      # uv lock clones private git deps into its own cache dir (outside the repo),
+      # where actions/checkout's repo-local credential doesn't apply; a global
+      # rewrite makes those clones authenticate.
+      - name: Authenticate git for private deps
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          git config --global url."https://x-access-token:${GH_PAT}@github.com/".insteadOf "https://github.com/"
+
       - name: Detect current framework pin
         id: current-pin
         run: |
