@@ -235,7 +235,17 @@ jobs:
           if [ -n "${NGROK_URL:-}" ]; then
             ngrok_args+=(--url "${NGROK_URL}")
           else
-            ngrok_args+=(--url https://)
+            generated_ngrok_domain="$(
+            python3 - <<'PY'
+          import os
+          import re
+
+          benchmark_name = re.sub(r"[^a-z0-9-]+", "-", os.environ["BENCHMARK_NAME"].lower()).strip("-")
+          benchmark_name = benchmark_name[:24].strip("-") or "benchmark"
+          print(f"ci-{benchmark_name}-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}.ngrok.app")
+          PY
+          )"
+            ngrok_args+=(--url "https://${generated_ngrok_domain}")
           fi
 
           ngrok "${ngrok_args[@]}" > /tmp/ngrok.log 2>&1 &
