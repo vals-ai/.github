@@ -1,1 +1,48 @@
 # .github
+
+## Reusable Workflows
+
+### Benchmark service smoke
+
+Benchmark service repositories can call `.github/workflows/benchmark-service-smoke.yaml` to build the service, expose it through ngrok, register the temporary URL with Valkyrie, and run one smoke task.
+
+```yaml
+name: valkyrie-smoke
+
+on:
+  push:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Optional model override, e.g. openai/gpt-5.5"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  smoke:
+    uses: vals-ai/.github/.github/workflows/benchmark-service-smoke.yaml@main
+    with:
+      benchmark_name: swebench
+    secrets:
+      VALKYRIE_AWS_ROLE_ARN: ${{ secrets.VALKYRIE_AWS_ROLE_ARN }}
+      NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+      NGROK_URL: ${{ secrets.NGROK_URL }}
+      SMOKE_DATASET: ${{ secrets.SMOKE_DATASET }}
+      SMOKE_TASK_ID: ${{ secrets.SMOKE_TASK_ID }}
+      SMOKE_AGENT: ${{ secrets.SMOKE_AGENT }}
+      SMOKE_MODEL: ${{ github.event.inputs.model || secrets.SMOKE_MODEL }}
+      BENCHMARK_SERVICE_ENV: ${{ secrets.BENCHMARK_SERVICE_ENV }}
+```
+
+`BENCHMARK_SERVICE_ENV` is newline-delimited Docker env-file content:
+
+```dotenv
+SWEBENCH_EVAL_STATE_BUCKET=agentic-harness-dev-533328366429
+JUDGE_MODEL=openai/gpt-5.5
+```
+
+Pass repo-specific values through `secrets:` rather than `with:` when they come from GitHub Secrets.
