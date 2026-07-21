@@ -13,6 +13,11 @@ on:
         required: false
         default: false
         type: boolean
+      checkout_submodules:
+        description: "Checkout git submodules before building the benchmark service image."
+        required: false
+        default: false
+        type: boolean
     outputs:
       valkyrie_run_id:
         description: "Valkyrie run id created by the smoke workflow."
@@ -36,6 +41,8 @@ on:
         required: false
       SSH_PRIVATE_KEY:
         required: false
+      GH_PAT:
+        required: false
 
 permissions:
   contents: read
@@ -58,6 +65,7 @@ env:
   DOCKER_BUILD_SSH: ${{ inputs.docker_build_ssh }}
   NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
   NGROK_URL: ${{ secrets.NGROK_URL }}
+  GH_PAT: ${{ secrets.GH_PAT }}
   SMOKE_DATASET: ${{ secrets.SMOKE_DATASET }}
   SMOKE_TASK_ID: ${{ secrets.SMOKE_TASK_ID }}
   SMOKE_AGENT: ${{ secrets.SMOKE_AGENT }}
@@ -73,6 +81,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          submodules: ${{ inputs.checkout_submodules && 'recursive' || 'false' }}
+          ssh-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
       - uses: actions/setup-python@v6
         with:
@@ -153,6 +164,9 @@ jobs:
           docker_build_args=()
           if [ "${DOCKER_BUILD_SSH}" = "true" ]; then
             docker_build_args+=(--ssh default)
+          fi
+          if [ -n "${GH_PAT:-}" ]; then
+            docker_build_args+=(--secret id=gh_token,env=GH_PAT)
           fi
 
           docker_env_args=()
