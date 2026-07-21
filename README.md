@@ -25,8 +25,6 @@ permissions:
 jobs:
   smoke:
     uses: vals-ai/.github/.github/workflows/benchmark-service-smoke.yaml@main
-    with:
-      benchmark_name: swebench
     secrets:
       VALKYRIE_AWS_ROLE_ARN: ${{ secrets.VALKYRIE_AWS_ROLE_ARN }}
       NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}

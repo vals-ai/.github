@@ -2,52 +2,6 @@ name: benchmark-service-smoke (reusable)
 
 on:
   workflow_call:
-    inputs:
-      benchmark_name:
-        description: "Benchmark name. Defaults to the repository name with -benchmark-service stripped when possible."
-        required: false
-        default: ""
-        type: string
-      service_port:
-        description: "Host port used by the benchmark service in CI."
-        required: false
-        default: "8001"
-        type: string
-      container_port:
-        description: "Container port exposed by the benchmark service image."
-        required: false
-        default: "8001"
-        type: string
-      health_path:
-        description: "HTTP health path used before exposing the service."
-        required: false
-        default: "/health"
-        type: string
-      aws_region:
-        description: "AWS region for OIDC credentials and Valkyrie config."
-        required: false
-        default: "us-east-1"
-        type: string
-      valkyrie_ref:
-        description: "Valkyrie git ref installed by uv."
-        required: false
-        default: "prod"
-        type: string
-      valkyrie_config_secret_id:
-        description: "AWS Secrets Manager secret containing the Valkyrie config."
-        required: false
-        default: "devBenchmarksInfraValkyrieConfig"
-        type: string
-      no_model_gateway:
-        description: "Pass no_model_gateway=true to agents that support direct provider credentials."
-        required: false
-        default: true
-        type: boolean
-      wait_attempts:
-        description: "Number of 30-second Valkyrie result polling attempts."
-        required: false
-        default: 90
-        type: number
     outputs:
       valkyrie_run_id:
         description: "Valkyrie run id created by the smoke workflow."
@@ -79,15 +33,14 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  AWS_REGION: ${{ inputs.aws_region }}
-  BENCHMARK_NAME: ${{ inputs.benchmark_name }}
-  SERVICE_PORT: ${{ inputs.service_port }}
-  CONTAINER_PORT: ${{ inputs.container_port }}
-  HEALTH_PATH: ${{ inputs.health_path }}
-  VALKYRIE_REF: ${{ inputs.valkyrie_ref }}
-  VALKYRIE_CONFIG_SECRET_ID: ${{ inputs.valkyrie_config_secret_id }}
-  NO_MODEL_GATEWAY: ${{ inputs.no_model_gateway }}
-  WAIT_ATTEMPTS: ${{ inputs.wait_attempts }}
+  AWS_REGION: us-east-1
+  SERVICE_PORT: "8001"
+  CONTAINER_PORT: "8001"
+  HEALTH_PATH: /health
+  VALKYRIE_REF: prod
+  VALKYRIE_CONFIG_SECRET_ID: devBenchmarksInfraValkyrieConfig
+  NO_MODEL_GATEWAY: "true"
+  WAIT_ATTEMPTS: "90"
   NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
   NGROK_URL: ${{ secrets.NGROK_URL }}
   SMOKE_DATASET: ${{ secrets.SMOKE_DATASET }}
@@ -150,9 +103,7 @@ jobs:
                   repo_name = repo_name[: -len("BenchmarkService")]
               return re.sub(r"[^a-z0-9-]+", "-", repo_name.lower()).strip("-")
 
-          benchmark_name = os.environ["BENCHMARK_NAME"].strip()
-          if not benchmark_name:
-              benchmark_name = derive_benchmark_name(os.environ["GITHUB_REPOSITORY"])
+          benchmark_name = derive_benchmark_name(os.environ["GITHUB_REPOSITORY"])
           if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", benchmark_name):
               sys.exit(f"Invalid benchmark name: {benchmark_name!r}")
 
