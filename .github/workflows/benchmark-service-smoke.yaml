@@ -353,6 +353,32 @@ jobs:
           asyncio.run(main())
           PY
 
+      - name: Verify public websocket reachability
+        run: |
+          set -euo pipefail
+
+          valkyrie_python="$(head -n 1 "$(command -v valkyrie)")"
+          valkyrie_python="${valkyrie_python#\#!}"
+
+          "$valkyrie_python" - <<'PY'
+          import asyncio
+          import os
+
+          import websockets
+
+          async def main() -> None:
+              service_url = os.environ["SERVICE_URL"]
+              websocket_url = service_url.replace("https://", "wss://").replace("http://", "ws://")
+              async with websockets.connect(
+                  f"{websocket_url}/ws/setup-task",
+                  open_timeout=30,
+                  ping_timeout=None,
+              ):
+                  print(f"Websocket reachable at {websocket_url}/ws/setup-task")
+
+          asyncio.run(main())
+          PY
+
       - name: Start one-task Valkyrie smoke run
         id: start-run
         run: |
@@ -504,6 +530,10 @@ jobs:
 
           asyncio.run(main())
           PY
+
+      - name: Dump benchmark service logs
+        if: failure()
+        run: docker logs "${CONTAINER_NAME}" || true
 
       - name: Stop ngrok tunnel
         if: always()
