@@ -2,6 +2,17 @@ name: benchmark-service-smoke (reusable)
 
 on:
   workflow_call:
+    inputs:
+      benchmark_name:
+        description: "Benchmark name. Defaults to the repository name with -benchmark-service stripped."
+        required: false
+        default: ""
+        type: string
+      docker_build_ssh:
+        description: "Enable Docker BuildKit SSH forwarding for services with private git dependencies."
+        required: false
+        default: false
+        type: boolean
     outputs:
       valkyrie_run_id:
         description: "Valkyrie run id created by the smoke workflow."
@@ -23,6 +34,8 @@ on:
         required: true
       BENCHMARK_SERVICE_ENV:
         required: false
+      SSH_PRIVATE_KEY:
+        required: false
 
 permissions:
   contents: read
@@ -41,6 +54,8 @@ env:
   VALKYRIE_CONFIG_SECRET_ID: devBenchmarksInfraValkyrieConfig
   NO_MODEL_GATEWAY: "true"
   WAIT_ATTEMPTS: "90"
+  BENCHMARK_NAME_INPUT: ${{ inputs.benchmark_name }}
+  DOCKER_BUILD_SSH: ${{ inputs.docker_build_ssh }}
   NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
   NGROK_URL: ${{ secrets.NGROK_URL }}
   SMOKE_DATASET: ${{ secrets.SMOKE_DATASET }}
@@ -103,7 +118,9 @@ jobs:
                   repo_name = repo_name[: -len("BenchmarkService")]
               return re.sub(r"[^a-z0-9-]+", "-", repo_name.lower()).strip("-")
 
-          benchmark_name = derive_benchmark_name(os.environ["GITHUB_REPOSITORY"])
+          benchmark_name = os.environ["BENCHMARK_NAME_INPUT"].strip()
+          if not benchmark_name:
+              benchmark_name = derive_benchmark_name(os.environ["GITHUB_REPOSITORY"])
           if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", benchmark_name):
               sys.exit(f"Invalid benchmark name: {benchmark_name!r}")
 
@@ -123,9 +140,20 @@ jobs:
           uv tool install --force "git+https://github.com/vals-ai/Valkyrie.git@${VALKYRIE_REF}"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+      - name: Configure Docker build SSH
+        if: ${{ inputs.docker_build_ssh }}
+        uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
       - name: Build and run benchmark service
         run: |
           set -euo pipefail
+
+          docker_build_args=()
+          if [ "${DOCKER_BUILD_SSH}" = "true" ]; then
+            docker_build_args+=(--ssh default)
+          fi
 
           docker_env_args=()
           if [ -n "${BENCHMARK_SERVICE_ENV:-}" ]; then
@@ -150,7 +178,7 @@ jobs:
             docker_env_args+=(--env-file "${benchmark_env_file}")
           fi
 
-          docker build --quiet -t "${CONTAINER_NAME}:${GITHUB_SHA}" .
+          DOCKER_BUILDKIT=1 docker build --quiet "${docker_build_args[@]}" -t "${CONTAINER_NAME}:${GITHUB_SHA}" .
           docker run -d --name "${CONTAINER_NAME}" \
             "${docker_env_args[@]}" \
             -e AWS_ACCESS_KEY_ID \

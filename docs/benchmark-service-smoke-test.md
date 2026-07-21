@@ -32,6 +32,19 @@ jobs:
       BENCHMARK_SERVICE_ENV: ${{ secrets.BENCHMARK_SERVICE_ENV }}
 ```
 
+Optional inputs are available when the default repo-name behavior is not enough. Keep the regular required secrets from the example above, then add the extra values needed by that service:
+
+```yaml
+jobs:
+  smoke:
+    uses: vals-ai/.github/.github/workflows/benchmark-service-smoke.yaml@main
+    with:
+      benchmark_name: harvey
+      docker_build_ssh: true
+    secrets:
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+```
+
 `BENCHMARK_SERVICE_ENV` is newline-delimited Docker env-file content:
 
 ```dotenv
