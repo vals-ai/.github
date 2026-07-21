@@ -192,7 +192,7 @@ jobs:
             docker_env_args+=(--env-file "${benchmark_env_file}")
           fi
 
-          DOCKER_BUILDKIT=1 docker build --quiet "${docker_build_args[@]}" -t "${CONTAINER_NAME}:${GITHUB_SHA}" .
+          DOCKER_BUILDKIT=1 docker build "${docker_build_args[@]}" -t "${CONTAINER_NAME}:${GITHUB_SHA}" .
           docker run -d --name "${CONTAINER_NAME}" \
             "${docker_env_args[@]}" \
             -e AWS_ACCESS_KEY_ID \
