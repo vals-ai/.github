@@ -233,12 +233,24 @@ jobs:
               if not separator or not key_pattern.fullmatch(key):
                   sys.exit(
                       f"Invalid BENCHMARK_SERVICE_AWS_SECRET_REFS line {line_number}: "
-                      "expected KEY=secret-id"
+                      "expected KEY=secret-id or KEY=secret-id#json-field"
                   )
 
               secret_id = ref.strip()
               if not secret_id:
-                  sys.exit(f"Invalid BENCHMARK_SERVICE_AWS_SECRET_REFS line {line_number}: expected KEY=secret-id")
+                  sys.exit(
+                      f"Invalid BENCHMARK_SERVICE_AWS_SECRET_REFS line {line_number}: "
+                      "expected KEY=secret-id or KEY=secret-id#json-field"
+                  )
+
+              secret_field = None
+              if "#" in secret_id:
+                  secret_id, secret_field = secret_id.rsplit("#", 1)
+                  if not secret_id or not secret_field:
+                      sys.exit(
+                          f"Invalid BENCHMARK_SERVICE_AWS_SECRET_REFS line {line_number}: "
+                          "expected KEY=secret-id#json-field"
+                      )
 
               secret_string = subprocess.check_output(
                   [
@@ -256,6 +268,17 @@ jobs:
               ).rstrip("\n")
 
               value = secret_string
+              if secret_field:
+                  import json
+
+                  try:
+                      secret_payload = json.loads(secret_string)
+                  except json.JSONDecodeError as error:
+                      sys.exit(f"AWS secret {secret_id} is not JSON, cannot read field {secret_field}: {error}")
+                  if secret_field not in secret_payload:
+                      sys.exit(f"AWS secret {secret_id} does not contain field {secret_field}")
+                  value = str(secret_payload[secret_field])
+
               if "\n" in value:
                   sys.exit(f"AWS secret value for {key} contains a newline, which Docker env files do not support")
 
