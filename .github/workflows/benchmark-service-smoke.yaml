@@ -72,7 +72,6 @@ env:
   AWS_REGION: us-east-1
   SERVICE_PORT: "8001"
   CONTAINER_PORT: "8001"
-  PROXY_PORT: "18001"
   HEALTH_PATH: /health
   TRACKER_SERVICE_URL: https://benchmark-tracker-dev.vals.ai
   VALKYRIE_REF: prod
@@ -307,148 +306,6 @@ jobs:
           docker logs "${CONTAINER_NAME}"
           exit 1
 
-      - name: Start smoke timeout proxy
-        run: |
-          set -euo pipefail
-
-          valkyrie_python="$(head -n 1 "$(command -v valkyrie)")"
-          valkyrie_python="${valkyrie_python#\#!}"
-
-          cat > /tmp/benchmark-smoke-proxy.py <<'PY'
-          from __future__ import annotations
-
-          import asyncio
-          import json
-          import os
-          from collections.abc import AsyncIterator
-
-          import httpx
-          import uvicorn
-          import websockets
-          from fastapi import FastAPI, Request, Response, WebSocket
-          from starlette.responses import StreamingResponse
-          from websockets.exceptions import ConnectionClosed
-
-          SERVICE_URL = f"http://127.0.0.1:{os.environ['SERVICE_PORT']}"
-          SERVICE_WS_URL = f"ws://127.0.0.1:{os.environ['SERVICE_PORT']}"
-          PROXY_PORT = int(os.environ["PROXY_PORT"])
-          HOP_BY_HOP_HEADERS = {
-              "connection",
-              "keep-alive",
-              "proxy-authenticate",
-              "proxy-authorization",
-              "te",
-              "trailer",
-              "transfer-encoding",
-              "upgrade",
-              "content-length",
-          }
-
-          app = FastAPI()
-          client = httpx.AsyncClient(timeout=None, follow_redirects=False)
-
-          def filtered_headers(headers: httpx.Headers) -> dict[str, str]:
-              return {
-                  key: value
-                  for key, value in headers.items()
-                  if key.lower() not in HOP_BY_HOP_HEADERS
-              }
-
-          @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
-          async def proxy_http(path: str, request: Request) -> Response:
-              upstream_url = httpx.URL(f"{SERVICE_URL}/{path}").copy_with(query=request.url.query.encode())
-              body = await request.body()
-              upstream_response = await client.request(
-                  request.method,
-                  upstream_url,
-                  content=body,
-                  headers={
-                      key: value
-                      for key, value in request.headers.items()
-                      if key.lower() not in HOP_BY_HOP_HEADERS and key.lower() != "host"
-                  },
-              )
-
-              if request.method == "GET" and path.rstrip("/") == "retrieve-task":
-                  payload = upstream_response.json()
-                  payload["agent_timeout"] = 180.0
-                  return Response(
-                      content=json.dumps(payload),
-                      status_code=upstream_response.status_code,
-                      headers=filtered_headers(upstream_response.headers),
-                      media_type="application/json",
-                  )
-
-              async def body_iterator() -> AsyncIterator[bytes]:
-                  yield upstream_response.content
-
-              return StreamingResponse(
-                  body_iterator(),
-                  status_code=upstream_response.status_code,
-                  headers=filtered_headers(upstream_response.headers),
-              )
-
-          @app.websocket("/ws/{path:path}")
-          async def proxy_websocket(path: str, websocket: WebSocket) -> None:
-              await websocket.accept()
-              upstream_url = f"{SERVICE_WS_URL}/ws/{path}"
-              if websocket.url.query:
-                  upstream_url = f"{upstream_url}?{websocket.url.query}"
-              upstream_headers = {
-                  key: value
-                  for key, value in websocket.headers.items()
-                  if key.lower()
-                  in {
-                      "authorization",
-                      "x-api-key",
-                      "x-api-url",
-                      "x-target",
-                      "x-descope-api-key",
-                  }
-              }
-
-              async with websockets.connect(
-                  upstream_url,
-                  additional_headers=upstream_headers,
-                  ping_timeout=None,
-              ) as upstream:
-                  async def client_to_upstream() -> None:
-                      while True:
-                          message = await websocket.receive()
-                          if "text" in message:
-                              await upstream.send(message["text"])
-                          elif "bytes" in message:
-                              await upstream.send(message["bytes"])
-                          elif message["type"] == "websocket.disconnect":
-                              await upstream.close()
-                              return
-
-                  async def upstream_to_client() -> None:
-                      async for message in upstream:
-                          if isinstance(message, bytes):
-                              await websocket.send_bytes(message)
-                          else:
-                              await websocket.send_text(message)
-
-                  try:
-                      await asyncio.gather(client_to_upstream(), upstream_to_client())
-                  except ConnectionClosed:
-                      return
-
-          uvicorn.run(app, host="127.0.0.1", port=PROXY_PORT, log_level="info")
-          PY
-
-          "$valkyrie_python" /tmp/benchmark-smoke-proxy.py > /tmp/benchmark-smoke-proxy.log 2>&1 &
-          echo "SMOKE_PROXY_PID=$!" >> "$GITHUB_ENV"
-
-          for _ in {1..30}; do
-            curl -fsS "http://127.0.0.1:${PROXY_PORT}${HEALTH_PATH}" && exit 0
-            sleep 1
-          done
-
-          cat /tmp/benchmark-smoke-proxy.log
-          exit 1
-
       - name: Install ngrok
         run: |
           set -euo pipefail
@@ -463,7 +320,7 @@ jobs:
 
           ngrok config add-authtoken "${NGROK_AUTHTOKEN}"
 
-          ngrok_args=(http "http://127.0.0.1:${PROXY_PORT}" --log stdout)
+          ngrok_args=(http "http://127.0.0.1:${SERVICE_PORT}" --log stdout)
           if [ -n "${NGROK_URL:-}" ]; then
             ngrok_args+=(--url "${NGROK_URL}")
           else
@@ -782,11 +639,4 @@ jobs:
         run: |
           if [ -n "${NGROK_PID:-}" ]; then
             kill "${NGROK_PID}" || true
-          fi
-
-      - name: Stop smoke timeout proxy
-        if: always()
-        run: |
-          if [ -n "${SMOKE_PROXY_PID:-}" ]; then
-            kill "${SMOKE_PROXY_PID}" || true
           fi
