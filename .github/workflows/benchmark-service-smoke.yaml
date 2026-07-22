@@ -48,6 +48,8 @@ on:
         required: true
       BENCHMARK_SERVICE_ENV:
         required: false
+      BENCHMARK_SERVICE_AWS_SECRET_REFS:
+        required: false
       SSH_PRIVATE_KEY:
         required: false
       GH_PAT:
@@ -65,6 +67,7 @@ env:
   AWS_REGION: us-east-1
   SERVICE_PORT: "8001"
   CONTAINER_PORT: "8001"
+  PROXY_PORT: "18001"
   HEALTH_PATH: /health
   VALKYRIE_REF: prod
   VALKYRIE_CONFIG_SECRET_ID: devBenchmarksInfraValkyrieConfig
@@ -82,6 +85,7 @@ env:
   SMOKE_AGENT: ${{ secrets.SMOKE_AGENT }}
   SMOKE_MODEL: ${{ secrets.SMOKE_MODEL }}
   BENCHMARK_SERVICE_ENV: ${{ secrets.BENCHMARK_SERVICE_ENV }}
+  BENCHMARK_SERVICE_AWS_SECRET_REFS: ${{ secrets.BENCHMARK_SERVICE_AWS_SECRET_REFS }}
 
 jobs:
   smoke:
@@ -181,10 +185,66 @@ jobs:
           fi
 
           docker_env_args=()
-          if [ -n "${BENCHMARK_SERVICE_ENV:-}" ]; then
+          if [ -n "${BENCHMARK_SERVICE_ENV:-}" ] || [ -n "${BENCHMARK_SERVICE_AWS_SECRET_REFS:-}" ]; then
             benchmark_env_file="${RUNNER_TEMP}/benchmark-service.env"
             umask 077
-            printf '%s\n' "${BENCHMARK_SERVICE_ENV}" > "${benchmark_env_file}"
+            : > "${benchmark_env_file}"
+
+            if [ -n "${BENCHMARK_SERVICE_AWS_SECRET_REFS:-}" ]; then
+              python3 - "${benchmark_env_file}" <<'PY'
+          import os
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          env_path = Path(sys.argv[1])
+          key_pattern = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+          for line_number, line in enumerate(os.environ["BENCHMARK_SERVICE_AWS_SECRET_REFS"].splitlines(), start=1):
+              stripped = line.strip()
+              if not stripped or stripped.startswith("#"):
+                  continue
+              key, separator, ref = stripped.partition("=")
+              if not separator or not key_pattern.fullmatch(key):
+                  sys.exit(
+                      f"Invalid BENCHMARK_SERVICE_AWS_SECRET_REFS line {line_number}: "
+                      "expected KEY=secret-id"
+                  )
+
+              secret_id = ref.strip()
+              if not secret_id:
+                  sys.exit(f"Invalid BENCHMARK_SERVICE_AWS_SECRET_REFS line {line_number}: expected KEY=secret-id")
+
+              secret_string = subprocess.check_output(
+                  [
+                      "aws",
+                      "secretsmanager",
+                      "get-secret-value",
+                      "--secret-id",
+                      secret_id,
+                      "--query",
+                      "SecretString",
+                      "--output",
+                      "text",
+                  ],
+                  text=True,
+              ).rstrip("\n")
+
+              value = secret_string
+              if "\n" in value:
+                  sys.exit(f"AWS secret value for {key} contains a newline, which Docker env files do not support")
+
+              print(f"::add-mask::{value}")
+              with env_path.open("a", encoding="utf-8") as env_file:
+                  print(f"{key}={value}", file=env_file)
+          PY
+            fi
+
+            if [ -n "${BENCHMARK_SERVICE_ENV:-}" ]; then
+              printf '%s\n' "${BENCHMARK_SERVICE_ENV}" >> "${benchmark_env_file}"
+            fi
+
             python3 - "${benchmark_env_file}" <<'PY'
           import re
           import sys
@@ -205,12 +265,6 @@ jobs:
 
           DOCKER_BUILDKIT=1 docker build "${docker_build_args[@]}" -t "${CONTAINER_NAME}:${GITHUB_SHA}" .
 
-          readarray -t image_cmd < <(
-            docker image inspect "${CONTAINER_NAME}:${GITHUB_SHA}" \
-              --format '{{json .Config.Cmd}}' |
-              python3 -c 'import json, sys; [print(arg) for arg in json.load(sys.stdin)]'
-          )
-
           docker run -d --name "${CONTAINER_NAME}" \
             "${docker_env_args[@]}" \
             -e AWS_ACCESS_KEY_ID \
@@ -219,44 +273,7 @@ jobs:
             -e AWS_REGION="${AWS_REGION}" \
             -e AWS_DEFAULT_REGION="${AWS_REGION}" \
             -p "127.0.0.1:${SERVICE_PORT}:${CONTAINER_PORT}" \
-            --entrypoint /bin/sh \
-            "${CONTAINER_NAME}:${GITHUB_SHA}" \
-            -lc '
-          set -eu
-          run_python() {
-            if [ -x /app/.venv/bin/python ]; then
-              /app/.venv/bin/python "$@"
-            else
-              uv run python "$@"
-            fi
-          }
-          app_path="$(run_python - <<'"'"'PY'"'"'
-          import inspect
-          from pathlib import Path
-
-          import benchmark_service.app
-
-          print(Path(inspect.getfile(benchmark_service.app)))
-          PY
-          )"
-          run_python - "${app_path}" <<'"'"'PY'"'"'
-          import sys
-          from pathlib import Path
-
-          app_path = Path(sys.argv[1])
-          text = app_path.read_text()
-          needle = "return await self.service.retrieve_task(task_id, skip_validation, dataset=dataset)"
-          replacement = (
-              "task = await self.service.retrieve_task(task_id, skip_validation, dataset=dataset)\n"
-              "        task.agent_timeout = 180.0\n"
-              "        return task"
-          )
-          if needle not in text:
-              raise SystemExit(f"Could not patch retrieve-task timeout in {app_path}")
-          app_path.write_text(text.replace(needle, replacement, 1))
-          PY
-          exec "$@"
-          ' smoke-entrypoint "${image_cmd[@]}"
+            "${CONTAINER_NAME}:${GITHUB_SHA}"
 
           for _ in {1..60}; do
             curl -fsS "http://127.0.0.1:${SERVICE_PORT}${HEALTH_PATH}" && exit 0
@@ -264,6 +281,132 @@ jobs:
           done
 
           docker logs "${CONTAINER_NAME}"
+          exit 1
+
+      - name: Start smoke timeout proxy
+        run: |
+          set -euo pipefail
+
+          valkyrie_python="$(head -n 1 "$(command -v valkyrie)")"
+          valkyrie_python="${valkyrie_python#\#!}"
+
+          cat > /tmp/benchmark-smoke-proxy.py <<'PY'
+          from __future__ import annotations
+
+          import asyncio
+          import json
+          import os
+          from collections.abc import AsyncIterator
+
+          import httpx
+          import uvicorn
+          import websockets
+          from fastapi import FastAPI, Request, Response, WebSocket
+          from starlette.responses import StreamingResponse
+          from websockets.exceptions import ConnectionClosed
+
+          SERVICE_URL = f"http://127.0.0.1:{os.environ['SERVICE_PORT']}"
+          SERVICE_WS_URL = f"ws://127.0.0.1:{os.environ['SERVICE_PORT']}"
+          PROXY_PORT = int(os.environ["PROXY_PORT"])
+          HOP_BY_HOP_HEADERS = {
+              "connection",
+              "keep-alive",
+              "proxy-authenticate",
+              "proxy-authorization",
+              "te",
+              "trailer",
+              "transfer-encoding",
+              "upgrade",
+              "content-length",
+          }
+
+          app = FastAPI()
+          client = httpx.AsyncClient(timeout=None, follow_redirects=False)
+
+          def filtered_headers(headers: httpx.Headers) -> dict[str, str]:
+              return {
+                  key: value
+                  for key, value in headers.items()
+                  if key.lower() not in HOP_BY_HOP_HEADERS
+              }
+
+          @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
+          async def proxy_http(path: str, request: Request) -> Response:
+              upstream_url = httpx.URL(f"{SERVICE_URL}/{path}").copy_with(query=request.url.query.encode())
+              body = await request.body()
+              upstream_response = await client.request(
+                  request.method,
+                  upstream_url,
+                  content=body,
+                  headers={
+                      key: value
+                      for key, value in request.headers.items()
+                      if key.lower() not in HOP_BY_HOP_HEADERS and key.lower() != "host"
+                  },
+              )
+
+              if request.method == "GET" and path.rstrip("/") == "retrieve-task":
+                  payload = upstream_response.json()
+                  payload["agent_timeout"] = 180.0
+                  return Response(
+                      content=json.dumps(payload),
+                      status_code=upstream_response.status_code,
+                      headers=filtered_headers(upstream_response.headers),
+                      media_type="application/json",
+                  )
+
+              async def body_iterator() -> AsyncIterator[bytes]:
+                  yield upstream_response.content
+
+              return StreamingResponse(
+                  body_iterator(),
+                  status_code=upstream_response.status_code,
+                  headers=filtered_headers(upstream_response.headers),
+              )
+
+          @app.websocket("/ws/{path:path}")
+          async def proxy_websocket(path: str, websocket: WebSocket) -> None:
+              await websocket.accept()
+              upstream_url = f"{SERVICE_WS_URL}/ws/{path}"
+              if websocket.url.query:
+                  upstream_url = f"{upstream_url}?{websocket.url.query}"
+
+              async with websockets.connect(upstream_url, ping_timeout=None) as upstream:
+                  async def client_to_upstream() -> None:
+                      while True:
+                          message = await websocket.receive()
+                          if "text" in message:
+                              await upstream.send(message["text"])
+                          elif "bytes" in message:
+                              await upstream.send(message["bytes"])
+                          elif message["type"] == "websocket.disconnect":
+                              await upstream.close()
+                              return
+
+                  async def upstream_to_client() -> None:
+                      async for message in upstream:
+                          if isinstance(message, bytes):
+                              await websocket.send_bytes(message)
+                          else:
+                              await websocket.send_text(message)
+
+                  try:
+                      await asyncio.gather(client_to_upstream(), upstream_to_client())
+                  except ConnectionClosed:
+                      return
+
+          uvicorn.run(app, host="127.0.0.1", port=PROXY_PORT, log_level="info")
+          PY
+
+          "$valkyrie_python" /tmp/benchmark-smoke-proxy.py > /tmp/benchmark-smoke-proxy.log 2>&1 &
+          echo "SMOKE_PROXY_PID=$!" >> "$GITHUB_ENV"
+
+          for _ in {1..30}; do
+            curl -fsS "http://127.0.0.1:${PROXY_PORT}${HEALTH_PATH}" && exit 0
+            sleep 1
+          done
+
+          cat /tmp/benchmark-smoke-proxy.log
           exit 1
 
       - name: Install ngrok
@@ -280,7 +423,7 @@ jobs:
 
           ngrok config add-authtoken "${NGROK_AUTHTOKEN}"
 
-          ngrok_args=(http "http://127.0.0.1:${SERVICE_PORT}" --log stdout)
+          ngrok_args=(http "http://127.0.0.1:${PROXY_PORT}" --log stdout)
           if [ -n "${NGROK_URL:-}" ]; then
             ngrok_args+=(--url "${NGROK_URL}")
           else
@@ -589,4 +732,11 @@ jobs:
         run: |
           if [ -n "${NGROK_PID:-}" ]; then
             kill "${NGROK_PID}" || true
+          fi
+
+      - name: Stop smoke timeout proxy
+        if: always()
+        run: |
+          if [ -n "${SMOKE_PROXY_PID:-}" ]; then
+            kill "${SMOKE_PROXY_PID}" || true
           fi
