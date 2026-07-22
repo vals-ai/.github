@@ -23,6 +23,11 @@ on:
         required: false
         default: true
         type: boolean
+      service_auth_required:
+        description: "Whether the locally-started benchmark service should require Descope auth."
+        required: false
+        default: false
+        type: boolean
     outputs:
       valkyrie_run_id:
         description: "Valkyrie run id created by the smoke workflow."
@@ -72,6 +77,7 @@ env:
   VALKYRIE_REF: prod
   VALKYRIE_CONFIG_SECRET_ID: devBenchmarksInfraValkyrieConfig
   NO_MODEL_GATEWAY: ${{ inputs.no_model_gateway }}
+  SERVICE_AUTH_REQUIRED: ${{ inputs.service_auth_required }}
   WAIT_ATTEMPTS: "90"
   BENCHMARK_NAME_INPUT: ${{ inputs.benchmark_name }}
   DOCKER_BUILD_SSH: ${{ inputs.docker_build_ssh }}
@@ -246,6 +252,22 @@ jobs:
             fi
 
             python3 - "${benchmark_env_file}" <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          env_path = Path(sys.argv[1])
+          lines = []
+          for line in env_path.read_text().splitlines():
+              key, separator, _ = line.partition("=")
+              if separator and key == "AUTH_REQUIRED":
+                  continue
+              lines.append(line)
+          lines.append(f"AUTH_REQUIRED={os.environ['SERVICE_AUTH_REQUIRED'].lower()}")
+          env_path.write_text("\n".join(lines) + "\n")
+          PY
+
+            python3 - "${benchmark_env_file}" <<'PY'
           import re
           import sys
           from pathlib import Path
@@ -272,7 +294,7 @@ jobs:
             -e AWS_SESSION_TOKEN \
             -e AWS_REGION="${AWS_REGION}" \
             -e AWS_DEFAULT_REGION="${AWS_REGION}" \
-            -e AUTH_REQUIRED=false \
+            -e AUTH_REQUIRED="${SERVICE_AUTH_REQUIRED}" \
             -p "127.0.0.1:${SERVICE_PORT}:${CONTAINER_PORT}" \
             "${CONTAINER_NAME}:${GITHUB_SHA}"
 
