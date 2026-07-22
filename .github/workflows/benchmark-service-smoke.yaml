@@ -396,7 +396,14 @@ jobs:
               upstream_headers = {
                   key: value
                   for key, value in websocket.headers.items()
-                  if key.lower() not in HOP_BY_HOP_HEADERS and key.lower() != "host"
+                  if key.lower()
+                  in {
+                      "authorization",
+                      "x-api-key",
+                      "x-api-url",
+                      "x-target",
+                      "x-descope-api-key",
+                  }
               }
 
               async with websockets.connect(
