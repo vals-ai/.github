@@ -33,6 +33,11 @@ on:
         required: false
         default: 180
         type: number
+      benchmark_service_env:
+        description: "Non-secret KEY=value lines appended to the benchmark service env file."
+        required: false
+        default: ""
+        type: string
     outputs:
       valkyrie_run_id:
         description: "Valkyrie run id created by the smoke workflow."
@@ -85,6 +90,7 @@ env:
   NO_MODEL_GATEWAY: ${{ inputs.no_model_gateway }}
   SERVICE_AUTH_REQUIRED: ${{ inputs.service_auth_required }}
   SMOKE_AGENT_TIMEOUT_SECONDS: ${{ inputs.smoke_agent_timeout_seconds }}
+  BENCHMARK_SERVICE_ENV_INPUT: ${{ inputs.benchmark_service_env }}
   WAIT_ATTEMPTS: "90"
   BENCHMARK_NAME_INPUT: ${{ inputs.benchmark_name }}
   DOCKER_BUILD_SSH: ${{ inputs.docker_build_ssh }}
@@ -297,6 +303,10 @@ jobs:
 
           if [ -n "${BENCHMARK_SERVICE_ENV:-}" ]; then
             printf '%s\n' "${BENCHMARK_SERVICE_ENV}" >> "${benchmark_env_file}"
+          fi
+
+          if [ -n "${BENCHMARK_SERVICE_ENV_INPUT:-}" ]; then
+            printf '%s\n' "${BENCHMARK_SERVICE_ENV_INPUT}" >> "${benchmark_env_file}"
           fi
 
           valkyrie_python="$(head -n 1 "$(command -v valkyrie)")"
