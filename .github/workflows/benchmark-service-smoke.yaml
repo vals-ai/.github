@@ -204,6 +204,13 @@ jobs:
           fi
 
           DOCKER_BUILDKIT=1 docker build "${docker_build_args[@]}" -t "${CONTAINER_NAME}:${GITHUB_SHA}" .
+
+          readarray -t image_cmd < <(
+            docker image inspect "${CONTAINER_NAME}:${GITHUB_SHA}" \
+              --format '{{json .Config.Cmd}}' |
+              python3 -c 'import json, sys; [print(arg) for arg in json.load(sys.stdin)]'
+          )
+
           docker run -d --name "${CONTAINER_NAME}" \
             "${docker_env_args[@]}" \
             -e AWS_ACCESS_KEY_ID \
@@ -212,7 +219,44 @@ jobs:
             -e AWS_REGION="${AWS_REGION}" \
             -e AWS_DEFAULT_REGION="${AWS_REGION}" \
             -p "127.0.0.1:${SERVICE_PORT}:${CONTAINER_PORT}" \
-            "${CONTAINER_NAME}:${GITHUB_SHA}"
+            --entrypoint /bin/sh \
+            "${CONTAINER_NAME}:${GITHUB_SHA}" \
+            -lc '
+          set -eu
+          run_python() {
+            if [ -x /app/.venv/bin/python ]; then
+              /app/.venv/bin/python "$@"
+            else
+              uv run python "$@"
+            fi
+          }
+          app_path="$(run_python - <<'"'"'PY'"'"'
+          import inspect
+          from pathlib import Path
+
+          import benchmark_service.app
+
+          print(Path(inspect.getfile(benchmark_service.app)))
+          PY
+          )"
+          run_python - "${app_path}" <<'"'"'PY'"'"'
+          import sys
+          from pathlib import Path
+
+          app_path = Path(sys.argv[1])
+          text = app_path.read_text()
+          needle = "return await self.service.retrieve_task(task_id, skip_validation, dataset=dataset)"
+          replacement = (
+              "task = await self.service.retrieve_task(task_id, skip_validation, dataset=dataset)\n"
+              "        task.agent_timeout = 180.0\n"
+              "        return task"
+          )
+          if needle not in text:
+              raise SystemExit(f"Could not patch retrieve-task timeout in {app_path}")
+          app_path.write_text(text.replace(needle, replacement, 1))
+          PY
+          exec "$@"
+          ' smoke-entrypoint "${image_cmd[@]}"
 
           for _ in {1..60}; do
             curl -fsS "http://127.0.0.1:${SERVICE_PORT}${HEALTH_PATH}" && exit 0
