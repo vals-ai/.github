@@ -557,12 +557,18 @@ jobs:
           import os
 
           import websockets
+          from valkyrie.sdk import ValkyrieConfig
 
           async def main() -> None:
               service_url = os.environ["SERVICE_URL"]
               websocket_url = service_url.replace("https://", "wss://").replace("http://", "ws://")
+              config = ValkyrieConfig.from_yaml()
+              headers = {}
+              if config.api_key and (api_key := config.api_key.get_secret_value()):
+                  headers["X-Descope-Api-Key"] = api_key
               async with websockets.connect(
                   f"{websocket_url}/ws/setup-task",
+                  additional_headers=headers,
                   open_timeout=30,
                   ping_timeout=None,
               ):
@@ -591,6 +597,9 @@ jobs:
               model = os.environ.get("SMOKE_MODEL") or None
               config = ValkyrieConfig.from_yaml()
               config.custom_benchmark_services[benchmark_name] = service_url
+              service_headers = {}
+              if config.api_key and (api_key := config.api_key.get_secret_value()):
+                  service_headers["X-Descope-Api-Key"] = api_key
               run_kwargs = {
                   "agent": os.environ["SMOKE_AGENT"],
                   "benchmark": benchmark_name,
@@ -599,6 +608,7 @@ jobs:
                   "task_ids": [os.environ["SMOKE_TASK_ID"]],
                   "concurrency": 1,
                   "label": f"ci-{os.environ['GITHUB_REF_NAME']}-{os.environ['GITHUB_SHA']}",
+                  "service_headers": service_headers,
               }
               if os.environ.get("NO_MODEL_GATEWAY", "").lower() == "true":
                   run_kwargs["agent_kwargs"] = {"no_model_gateway": "true"}
