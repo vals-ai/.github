@@ -102,9 +102,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
-        with:
-          submodules: ${{ inputs.checkout_submodules && 'recursive' || 'false' }}
-          ssh-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
       - uses: actions/setup-python@v6
         with:
@@ -177,6 +174,10 @@ jobs:
         uses: webfactory/ssh-agent@v0.9.1
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Checkout submodules
+        if: ${{ inputs.checkout_submodules }}
+        run: git submodule update --init --recursive
 
       - name: Build and run benchmark service
         run: |
