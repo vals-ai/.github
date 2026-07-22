@@ -18,6 +18,11 @@ on:
         required: false
         default: false
         type: boolean
+      no_model_gateway:
+        description: "Pass no_model_gateway=true to agents that support direct provider credentials."
+        required: false
+        default: true
+        type: boolean
     outputs:
       valkyrie_run_id:
         description: "Valkyrie run id created by the smoke workflow."
@@ -63,7 +68,7 @@ env:
   HEALTH_PATH: /health
   VALKYRIE_REF: prod
   VALKYRIE_CONFIG_SECRET_ID: devBenchmarksInfraValkyrieConfig
-  NO_MODEL_GATEWAY: "true"
+  NO_MODEL_GATEWAY: ${{ inputs.no_model_gateway }}
   WAIT_ATTEMPTS: "90"
   BENCHMARK_NAME_INPUT: ${{ inputs.benchmark_name }}
   DOCKER_BUILD_SSH: ${{ inputs.docker_build_ssh }}
