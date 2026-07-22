@@ -32,11 +32,26 @@ jobs:
       BENCHMARK_SERVICE_ENV: ${{ secrets.BENCHMARK_SERVICE_ENV }}
 ```
 
+Optional inputs are available when the default repo-name behavior is not enough. Keep the regular required secrets from the example above, then add the extra values needed by that service:
+
+```yaml
+jobs:
+  smoke:
+    uses: vals-ai/.github/.github/workflows/benchmark-service-smoke.yaml@main
+    with:
+      benchmark_name: harvey
+      docker_build_ssh: true
+    secrets:
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+```
+
 `BENCHMARK_SERVICE_ENV` is newline-delimited Docker env-file content:
 
 ```dotenv
 SWEBENCH_EVAL_STATE_BUCKET=agentic-harness-dev-533328366429
 JUDGE_MODEL=openai/gpt-5.5
 ```
+
+The workflow automatically passes `VALS_API_KEY` from the Valkyrie config secret to the service container. Set `VALS_API_KEY` in `BENCHMARK_SERVICE_ENV` only when a service needs to override that value.
 
 Pass repo-specific values through `secrets:` rather than `with:` when they come from GitHub Secrets.

@@ -2,6 +2,32 @@ name: benchmark-service-smoke (reusable)
 
 on:
   workflow_call:
+    inputs:
+      benchmark_name:
+        description: "Benchmark name. Defaults to the repository name with -benchmark-service stripped."
+        required: false
+        default: ""
+        type: string
+      docker_build_ssh:
+        description: "Enable Docker BuildKit SSH forwarding for services with private git dependencies."
+        required: false
+        default: false
+        type: boolean
+      checkout_submodules:
+        description: "Checkout git submodules before building the benchmark service image."
+        required: false
+        default: false
+        type: boolean
+      no_model_gateway:
+        description: "Pass no_model_gateway=true to agents that support direct provider credentials."
+        required: false
+        default: true
+        type: boolean
+      service_auth_required:
+        description: "Whether the locally-started benchmark service should require Descope auth."
+        required: false
+        default: false
+        type: boolean
     outputs:
       valkyrie_run_id:
         description: "Valkyrie run id created by the smoke workflow."
@@ -11,7 +37,11 @@ on:
         required: true
       NGROK_AUTHTOKEN:
         required: true
+      NGROK_API_KEY:
+        required: false
       NGROK_URL:
+        required: false
+      NGROK_PUBLIC_URL:
         required: false
       SMOKE_DATASET:
         required: true
@@ -22,6 +52,12 @@ on:
       SMOKE_MODEL:
         required: true
       BENCHMARK_SERVICE_ENV:
+        required: false
+      BENCHMARK_SERVICE_AWS_SECRET_REFS:
+        required: false
+      SSH_PRIVATE_KEY:
+        required: false
+      GH_PAT:
         required: false
 
 permissions:
@@ -37,17 +73,25 @@ env:
   SERVICE_PORT: "8001"
   CONTAINER_PORT: "8001"
   HEALTH_PATH: /health
+  TRACKER_SERVICE_URL: https://benchmark-tracker-dev.vals.ai
   VALKYRIE_REF: prod
   VALKYRIE_CONFIG_SECRET_ID: devBenchmarksInfraValkyrieConfig
-  NO_MODEL_GATEWAY: "true"
+  NO_MODEL_GATEWAY: ${{ inputs.no_model_gateway }}
+  SERVICE_AUTH_REQUIRED: ${{ inputs.service_auth_required }}
   WAIT_ATTEMPTS: "90"
+  BENCHMARK_NAME_INPUT: ${{ inputs.benchmark_name }}
+  DOCKER_BUILD_SSH: ${{ inputs.docker_build_ssh }}
   NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+  NGROK_API_KEY: ${{ secrets.NGROK_API_KEY }}
   NGROK_URL: ${{ secrets.NGROK_URL }}
+  NGROK_PUBLIC_URL: ${{ secrets.NGROK_PUBLIC_URL }}
+  GH_PAT: ${{ secrets.GH_PAT }}
   SMOKE_DATASET: ${{ secrets.SMOKE_DATASET }}
   SMOKE_TASK_ID: ${{ secrets.SMOKE_TASK_ID }}
   SMOKE_AGENT: ${{ secrets.SMOKE_AGENT }}
   SMOKE_MODEL: ${{ secrets.SMOKE_MODEL }}
   BENCHMARK_SERVICE_ENV: ${{ secrets.BENCHMARK_SERVICE_ENV }}
+  BENCHMARK_SERVICE_AWS_SECRET_REFS: ${{ secrets.BENCHMARK_SERVICE_AWS_SECRET_REFS }}
 
 jobs:
   smoke:
@@ -103,7 +147,9 @@ jobs:
                   repo_name = repo_name[: -len("BenchmarkService")]
               return re.sub(r"[^a-z0-9-]+", "-", repo_name.lower()).strip("-")
 
-          benchmark_name = derive_benchmark_name(os.environ["GITHUB_REPOSITORY"])
+          benchmark_name = os.environ["BENCHMARK_NAME_INPUT"].strip()
+          if not benchmark_name:
+              benchmark_name = derive_benchmark_name(os.environ["GITHUB_REPOSITORY"])
           if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", benchmark_name):
               sys.exit(f"Invalid benchmark name: {benchmark_name!r}")
 
@@ -123,16 +169,147 @@ jobs:
           uv tool install --force "git+https://github.com/vals-ai/Valkyrie.git@${VALKYRIE_REF}"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+      - name: Configure Valkyrie SDK
+        run: |
+          set -euo pipefail
+
+          mkdir -p ~/.config/valkyrie
+          aws secretsmanager get-secret-value \
+            --secret-id "${VALKYRIE_CONFIG_SECRET_ID}" \
+            --query SecretString \
+            --output text > ~/.config/valkyrie/valkyrie.yaml
+
+          {
+            printf '\n'
+            printf 'AWS_ACCESS_KEY_ID: "%s"\n' "${AWS_ACCESS_KEY_ID}"
+            printf 'AWS_SECRET_ACCESS_KEY: "%s"\n' "${AWS_SECRET_ACCESS_KEY}"
+            printf 'AWS_SESSION_TOKEN: "%s"\n' "${AWS_SESSION_TOKEN}"
+            printf 'AWS_DEFAULT_REGION: "%s"\n' "${AWS_REGION}"
+          } >> ~/.config/valkyrie/valkyrie.yaml
+
+      - name: Configure Docker build SSH
+        if: ${{ inputs.docker_build_ssh }}
+        uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Checkout submodules
+        if: ${{ inputs.checkout_submodules }}
+        run: git submodule update --init --recursive
+
       - name: Build and run benchmark service
         run: |
           set -euo pipefail
 
+          docker_build_args=()
+          if [ "${DOCKER_BUILD_SSH}" = "true" ]; then
+            docker_build_args+=(--ssh default)
+          fi
+          if [ -n "${GH_PAT:-}" ]; then
+            docker_build_args+=(--secret id=gh_token,env=GH_PAT)
+          fi
+
           docker_env_args=()
-          if [ -n "${BENCHMARK_SERVICE_ENV:-}" ]; then
-            benchmark_env_file="${RUNNER_TEMP}/benchmark-service.env"
-            umask 077
-            printf '%s\n' "${BENCHMARK_SERVICE_ENV}" > "${benchmark_env_file}"
+          benchmark_env_file="${RUNNER_TEMP}/benchmark-service.env"
+          umask 077
+          : > "${benchmark_env_file}"
+
+          if [ -n "${BENCHMARK_SERVICE_AWS_SECRET_REFS:-}" ]; then
             python3 - "${benchmark_env_file}" <<'PY'
+          import os
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          env_path = Path(sys.argv[1])
+          key_pattern = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+          for line_number, line in enumerate(os.environ["BENCHMARK_SERVICE_AWS_SECRET_REFS"].splitlines(), start=1):
+              stripped = line.strip()
+              if not stripped or stripped.startswith("#"):
+                  continue
+              key, separator, ref = stripped.partition("=")
+              if not separator or not key_pattern.fullmatch(key):
+                  sys.exit(
+                      f"Invalid BENCHMARK_SERVICE_AWS_SECRET_REFS line {line_number}: "
+                      "expected KEY=secret-id"
+                  )
+
+              secret_id = ref.strip()
+              if not secret_id:
+                  sys.exit(f"Invalid BENCHMARK_SERVICE_AWS_SECRET_REFS line {line_number}: expected KEY=secret-id")
+
+              secret_string = subprocess.check_output(
+                  [
+                      "aws",
+                      "secretsmanager",
+                      "get-secret-value",
+                      "--secret-id",
+                      secret_id,
+                      "--query",
+                      "SecretString",
+                      "--output",
+                      "text",
+                  ],
+                  text=True,
+              ).rstrip("\n")
+
+              value = secret_string
+              if "\n" in value:
+                  sys.exit(f"AWS secret value for {key} contains a newline, which Docker env files do not support")
+
+              print(f"::add-mask::{value}")
+              with env_path.open("a", encoding="utf-8") as env_file:
+                  print(f"{key}={value}", file=env_file)
+          PY
+          fi
+
+          if [ -n "${BENCHMARK_SERVICE_ENV:-}" ]; then
+            printf '%s\n' "${BENCHMARK_SERVICE_ENV}" >> "${benchmark_env_file}"
+          fi
+
+          valkyrie_python="$(head -n 1 "$(command -v valkyrie)")"
+          valkyrie_python="${valkyrie_python#\#!}"
+          "$valkyrie_python" - "${benchmark_env_file}" <<'PY'
+          from pathlib import Path
+          import sys
+
+          from valkyrie.sdk import ValkyrieConfig
+
+          env_path = Path(sys.argv[1])
+          existing_keys = {
+              line.partition("=")[0]
+              for line in env_path.read_text().splitlines()
+              if line.strip() and not line.lstrip().startswith("#") and "=" in line
+          }
+          if "VALS_API_KEY" not in existing_keys:
+              config = ValkyrieConfig.from_yaml()
+              if config.api_key and (api_key := config.api_key.get_secret_value()):
+                  if "\n" in api_key:
+                      raise SystemExit("Valkyrie api_key contains a newline, which Docker env files do not support")
+                  print(f"::add-mask::{api_key}")
+                  with env_path.open("a", encoding="utf-8") as env_file:
+                      print(f"VALS_API_KEY={api_key}", file=env_file)
+          PY
+
+          python3 - "${benchmark_env_file}" <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          env_path = Path(sys.argv[1])
+          lines = []
+          for line in env_path.read_text().splitlines():
+              key, separator, _ = line.partition("=")
+              if separator and key == "AUTH_REQUIRED":
+                  continue
+              lines.append(line)
+          lines.append(f"AUTH_REQUIRED={os.environ['SERVICE_AUTH_REQUIRED'].lower()}")
+          env_path.write_text("\n".join(lines) + "\n")
+          PY
+
+          python3 - "${benchmark_env_file}" <<'PY'
           import re
           import sys
           from pathlib import Path
@@ -147,10 +324,10 @@ jobs:
               if not separator or not key_pattern.fullmatch(key):
                   sys.exit(f"Invalid BENCHMARK_SERVICE_ENV line {line_number}: expected KEY=value")
           PY
-            docker_env_args+=(--env-file "${benchmark_env_file}")
-          fi
+          docker_env_args+=(--env-file "${benchmark_env_file}")
 
-          docker build --quiet -t "${CONTAINER_NAME}:${GITHUB_SHA}" .
+          DOCKER_BUILDKIT=1 docker build "${docker_build_args[@]}" -t "${CONTAINER_NAME}:${GITHUB_SHA}" .
+
           docker run -d --name "${CONTAINER_NAME}" \
             "${docker_env_args[@]}" \
             -e AWS_ACCESS_KEY_ID \
@@ -158,6 +335,7 @@ jobs:
             -e AWS_SESSION_TOKEN \
             -e AWS_REGION="${AWS_REGION}" \
             -e AWS_DEFAULT_REGION="${AWS_REGION}" \
+            -e AUTH_REQUIRED="${SERVICE_AUTH_REQUIRED}" \
             -p "127.0.0.1:${SERVICE_PORT}:${CONTAINER_PORT}" \
             "${CONTAINER_NAME}:${GITHUB_SHA}"
 
@@ -186,6 +364,18 @@ jobs:
           ngrok_args=(http "http://127.0.0.1:${SERVICE_PORT}" --log stdout)
           if [ -n "${NGROK_URL:-}" ]; then
             ngrok_args+=(--url "${NGROK_URL}")
+          else
+            generated_ngrok_domain="$(
+            python3 - <<'PY'
+          import os
+          import re
+
+          benchmark_name = re.sub(r"[^a-z0-9-]+", "-", os.environ["BENCHMARK_NAME"].lower()).strip("-")
+          benchmark_name = benchmark_name[:24].strip("-") or "benchmark"
+          print(f"ci-{benchmark_name}-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}.ngrok.app")
+          PY
+          )"
+            ngrok_args+=(--url "https://${generated_ngrok_domain}")
           fi
 
           ngrok "${ngrok_args[@]}" > /tmp/ngrok.log 2>&1 &
@@ -213,10 +403,11 @@ jobs:
           PY
           )" || true
 
-            if [ -n "${service_url}" ] &&
-              curl -fsS --connect-timeout 10 --max-time 20 "${service_url}${HEALTH_PATH}"; then
-              echo "SERVICE_URL=${service_url}" >> "$GITHUB_ENV"
-              echo "ngrok URL: ${service_url}"
+            public_service_url="${NGROK_PUBLIC_URL:-${service_url}}"
+            if [ -n "${public_service_url}" ] &&
+              curl -fsS --connect-timeout 10 --max-time 20 "${public_service_url}${HEALTH_PATH}"; then
+              echo "SERVICE_URL=${public_service_url}" >> "$GITHUB_ENV"
+              echo "ngrok URL: ${public_service_url}"
               exit 0
             fi
             sleep 5
@@ -227,24 +418,6 @@ jobs:
             curl -v --connect-timeout 10 --max-time 20 "${service_url}${HEALTH_PATH}"
           fi
           exit 1
-
-      - name: Configure Valkyrie SDK
-        run: |
-          set -euo pipefail
-
-          mkdir -p ~/.config/valkyrie
-          aws secretsmanager get-secret-value \
-            --secret-id "${VALKYRIE_CONFIG_SECRET_ID}" \
-            --query SecretString \
-            --output text > ~/.config/valkyrie/valkyrie.yaml
-
-          {
-            printf '\n'
-            printf 'AWS_ACCESS_KEY_ID: "%s"\n' "${AWS_ACCESS_KEY_ID}"
-            printf 'AWS_SECRET_ACCESS_KEY: "%s"\n' "${AWS_SECRET_ACCESS_KEY}"
-            printf 'AWS_SESSION_TOKEN: "%s"\n' "${AWS_SESSION_TOKEN}"
-            printf 'AWS_DEFAULT_REGION: "%s"\n' "${AWS_REGION}"
-          } >> ~/.config/valkyrie/valkyrie.yaml
 
       - name: Wait for tracker to reach benchmark service
         run: |
@@ -292,6 +465,38 @@ jobs:
           asyncio.run(main())
           PY
 
+      - name: Verify public websocket reachability
+        run: |
+          set -euo pipefail
+
+          valkyrie_python="$(head -n 1 "$(command -v valkyrie)")"
+          valkyrie_python="${valkyrie_python#\#!}"
+
+          "$valkyrie_python" - <<'PY'
+          import asyncio
+          import os
+
+          import websockets
+          from valkyrie.sdk import ValkyrieConfig
+
+          async def main() -> None:
+              service_url = os.environ["SERVICE_URL"]
+              websocket_url = service_url.replace("https://", "wss://").replace("http://", "ws://")
+              config = ValkyrieConfig.from_yaml()
+              headers = {}
+              if config.api_key and (api_key := config.api_key.get_secret_value()):
+                  headers["X-Descope-Api-Key"] = api_key
+              async with websockets.connect(
+                  f"{websocket_url}/ws/setup-task",
+                  additional_headers=headers,
+                  open_timeout=30,
+                  ping_timeout=None,
+              ):
+                  print(f"Websocket reachable at {websocket_url}/ws/setup-task")
+
+          asyncio.run(main())
+          PY
+
       - name: Start one-task Valkyrie smoke run
         id: start-run
         run: |
@@ -312,6 +517,9 @@ jobs:
               model = os.environ.get("SMOKE_MODEL") or None
               config = ValkyrieConfig.from_yaml()
               config.custom_benchmark_services[benchmark_name] = service_url
+              service_headers = {}
+              if config.api_key and (api_key := config.api_key.get_secret_value()):
+                  service_headers["X-Descope-Api-Key"] = api_key
               run_kwargs = {
                   "agent": os.environ["SMOKE_AGENT"],
                   "benchmark": benchmark_name,
@@ -320,6 +528,7 @@ jobs:
                   "task_ids": [os.environ["SMOKE_TASK_ID"]],
                   "concurrency": 1,
                   "label": f"ci-{os.environ['GITHUB_REF_NAME']}-{os.environ['GITHUB_SHA']}",
+                  "service_headers": service_headers,
               }
               if os.environ.get("NO_MODEL_GATEWAY", "").lower() == "true":
                   run_kwargs["agent_kwargs"] = {"no_model_gateway": "true"}
@@ -443,6 +652,10 @@ jobs:
 
           asyncio.run(main())
           PY
+
+      - name: Dump benchmark service logs
+        if: failure()
+        run: docker logs "${CONTAINER_NAME}" || true
 
       - name: Stop ngrok tunnel
         if: always()
