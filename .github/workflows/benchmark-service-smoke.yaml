@@ -272,6 +272,7 @@ jobs:
             -e AWS_SESSION_TOKEN \
             -e AWS_REGION="${AWS_REGION}" \
             -e AWS_DEFAULT_REGION="${AWS_REGION}" \
+            -e AUTH_REQUIRED=false \
             -p "127.0.0.1:${SERVICE_PORT}:${CONTAINER_PORT}" \
             "${CONTAINER_NAME}:${GITHUB_SHA}"
 
