@@ -74,6 +74,7 @@ env:
   CONTAINER_PORT: "8001"
   PROXY_PORT: "18001"
   HEALTH_PATH: /health
+  TRACKER_SERVICE_URL: https://benchmark-tracker-dev.vals.ai
   VALKYRIE_REF: prod
   VALKYRIE_CONFIG_SECRET_ID: devBenchmarksInfraValkyrieConfig
   NO_MODEL_GATEWAY: ${{ inputs.no_model_gateway }}
