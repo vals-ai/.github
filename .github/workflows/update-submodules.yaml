@@ -12,6 +12,11 @@ on:
         description: 'Commit message for the submodule update'
         required: true
         type: string
+      direct_push_branch:
+        description: 'Branch to update directly instead of opening a pull request'
+        required: false
+        default: ''
+        type: string
       pr_title:
         description: 'Title for the submodule update PR'
         required: true
@@ -25,17 +30,53 @@ on:
         required: true
       SUBMODULES_SSH_KEY:
         required: true
+      DIRECT_PUSH_SSH_KEY:
+        required: false
       SLACK_WEBHOOK_URL:
         required: false
+
+concurrency:
+  group: update-submodules-${{ github.repository }}-${{ inputs.direct_push_branch || inputs.pr_branch }}
+  cancel-in-progress: false
 
 jobs:
   update:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout direct-update branch
+        if: inputs.direct_push_branch != ''
+        uses: actions/checkout@v6
+        with:
+          ref: refs/heads/${{ inputs.direct_push_branch }}
+          token: ${{ secrets.GH_PAT }}
+          submodules: false
+          persist-credentials: false
+
+      - name: Checkout caller ref
+        if: inputs.direct_push_branch == ''
+        uses: actions/checkout@v6
         with:
           token: ${{ secrets.GH_PAT }}
           submodules: false
+          persist-credentials: false
+
+      - name: Validate direct-push configuration
+        if: inputs.direct_push_branch != ''
+        env:
+          DIRECT_PUSH_BRANCH: ${{ inputs.direct_push_branch }}
+          DIRECT_PUSH_SSH_KEY: ${{ secrets.DIRECT_PUSH_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          if ! git check-ref-format --branch "$DIRECT_PUSH_BRANCH"; then
+            echo "::error::direct_push_branch must be a valid Git branch name."
+            exit 1
+          fi
+          if [[ -z "$DIRECT_PUSH_SSH_KEY" ]]; then
+            echo "::error::DIRECT_PUSH_SSH_KEY is required when direct_push_branch is set."
+            exit 1
+          fi
 
       - name: Configure SSH for submodule repos
         env:
@@ -60,8 +101,47 @@ jobs:
       - name: Advance each submodule to latest remote HEAD
         run: git submodule update --remote
 
+      - name: Push submodule updates directly
+        id: direct
+        if: inputs.direct_push_branch != ''
+        env:
+          COMMIT_MESSAGE: ${{ inputs.commit_message }}
+          DIRECT_PUSH_BRANCH: ${{ inputs.direct_push_branch }}
+          DIRECT_PUSH_SSH_KEY: ${{ secrets.DIRECT_PUSH_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          git add --update
+          if git diff --cached --quiet; then
+            echo "updated=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git submodule update --init --recursive
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "$COMMIT_MESSAGE"
+
+          direct_push_key="$RUNNER_TEMP/direct_push_key"
+          printf '%s\n' "$DIRECT_PUSH_SSH_KEY" > "$direct_push_key"
+          chmod 600 "$direct_push_key"
+          direct_ssh_command="ssh -i $direct_push_key -o IdentitiesOnly=yes"
+          git remote set-url origin "git@github.com:${GITHUB_REPOSITORY}.git"
+
+          GIT_SSH_COMMAND="$direct_ssh_command" \
+            git fetch origin "refs/heads/$DIRECT_PUSH_BRANCH"
+          if [[ "$(git rev-parse HEAD^)" != "$(git rev-parse FETCH_HEAD)" ]]; then
+            echo "::error::$DIRECT_PUSH_BRANCH advanced during the update. Retry the workflow."
+            exit 1
+          fi
+          GIT_SSH_COMMAND="$direct_ssh_command" \
+            git push origin "HEAD:refs/heads/$DIRECT_PUSH_BRANCH"
+
+          echo "updated=true" >> "$GITHUB_OUTPUT"
+          echo "commit-sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Open PR if submodules changed
         id: cpr
+        if: inputs.direct_push_branch == ''
         uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ secrets.GH_PAT }}
@@ -74,7 +154,7 @@ jobs:
           branch: ${{ inputs.pr_branch }}
           delete-branch: true
 
-      - name: Notify Slack
+      - name: Notify Slack about new PR
         if: steps.cpr.outputs.pull-request-operation == 'created'
         run: |
           [ -z "$SLACK_WEBHOOK_URL" ] && exit 0
@@ -84,4 +164,20 @@ jobs:
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           PR_URL: ${{ steps.cpr.outputs.pull-request-url }}
+          REPO: ${{ github.repository }}
+
+      - name: Notify Slack about direct update
+        if: steps.direct.outputs.updated == 'true'
+        run: |
+          [ -z "$SLACK_WEBHOOK_URL" ] && exit 0
+          commit_url="https://github.com/$REPO/commit/$COMMIT_SHA"
+          if ! curl -sf -X POST "$SLACK_WEBHOOK_URL" \
+              -H 'Content-Type: application/json' \
+              -d "{\"text\":\"📦 Submodules updated on $DIRECT_PUSH_BRANCH ($REPO): $commit_url\"}"; then
+            echo "::warning::The submodule update landed, but the Slack notification failed."
+          fi
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          COMMIT_SHA: ${{ steps.direct.outputs.commit-sha }}
+          DIRECT_PUSH_BRANCH: ${{ inputs.direct_push_branch }}
           REPO: ${{ github.repository }}
