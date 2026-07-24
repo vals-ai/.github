@@ -1,0 +1,69 @@
+name: validate-lockfile (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      project_path:
+        description: "Path containing pyproject.toml and uv.lock."
+        required: false
+        default: "."
+        type: string
+      python_version:
+        description: "Python version used by uv while checking the lockfile."
+        required: false
+        default: "3.12"
+        type: string
+    secrets:
+      GH_PAT:
+        required: false
+      SSH_PRIVATE_KEY:
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  HAS_GH_PAT: ${{ secrets.GH_PAT != '' }}
+  HAS_SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY != '' }}
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: ${{ inputs.project_path }}/uv.lock
+
+      - name: Configure SSH for private dependencies
+        if: env.HAS_SSH_PRIVATE_KEY == 'true'
+        uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Authenticate git for private dependencies
+        if: env.HAS_GH_PAT == 'true'
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          git config --global url."https://x-access-token:${GH_PAT}@github.com/".insteadOf "https://github.com/"
+
+      - name: Initialize submodules
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          git submodule update --init --recursive
+
+      - name: Validate uv lockfile
+        env:
+          PROJECT_PATH: ${{ inputs.project_path }}
+        run: |
+          test -f "${PROJECT_PATH}/pyproject.toml"
+          test -f "${PROJECT_PATH}/uv.lock"
+          uv lock --check --project "${PROJECT_PATH}"
