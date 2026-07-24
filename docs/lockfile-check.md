@@ -1,6 +1,6 @@
 # Lockfile Check
 
-Use `.github/workflows/validate-lockfile.yaml` to fail CI when `pyproject.toml` and `uv.lock` disagree. This catches changes like bumping `create-benchmark-service` in `pyproject.toml` while leaving `uv.lock` pinned to the older resolved commit or tag.
+Use `.github/workflows/validate-lockfile.yaml` to fail CI when `pyproject.toml` and `uv.lock` disagree. This catches dependency changes in `pyproject.toml` when `uv.lock` is still pinned to an older resolved commit, tag, or version.
 
 Add this workflow to a service repo:
 
