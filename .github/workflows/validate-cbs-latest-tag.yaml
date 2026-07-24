@@ -27,7 +27,38 @@ jobs:
           dependency_name="create-benchmark-service"
           repository_url="https://github.com/vals-ai/create-benchmark-service.git"
 
-          uv sync --locked --no-install-project
+          cbs_requirement="$(
+            uv run --no-project python - <<'PY'
+          import tomllib
+          from pathlib import Path
+          from urllib.parse import parse_qs, urlsplit, urlunsplit
+
+          dependency_name = "create-benchmark-service"
+          lock = tomllib.loads(Path("uv.lock").read_text())
+
+          for package in lock["package"]:
+              if package["name"] != dependency_name:
+                  continue
+              source_git = package["source"]["git"]
+              split_url = urlsplit(source_git)
+              repository_url = urlunsplit(
+                  (split_url.scheme, split_url.netloc, split_url.path, "", "")
+              )
+              query = parse_qs(split_url.query)
+              ref = split_url.fragment or query.get(
+                  "tag", query.get("rev", query.get("branch", [""]))
+              )[0]
+              if not ref:
+                  raise SystemExit(f"{dependency_name} lock entry has no git ref")
+              print(f"{dependency_name} @ git+{repository_url}@{ref}")
+              break
+          else:
+              raise SystemExit(f"{dependency_name} was not found in uv.lock")
+          PY
+          )"
+
+          uv venv .cbs-check-venv --python 3.12
+          uv pip install --python .cbs-check-venv/bin/python --no-deps "${cbs_requirement}"
 
           latest_tag="$(
             git ls-remote --tags --sort=-version:refname \
@@ -44,7 +75,7 @@ jobs:
           fi
 
           installed_version="$(
-            uv run --no-sync python - "${dependency_name}" <<'PY'
+            .cbs-check-venv/bin/python - "${dependency_name}" <<'PY'
           import importlib.metadata
           import sys
 
