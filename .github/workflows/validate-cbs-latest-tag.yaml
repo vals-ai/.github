@@ -1,0 +1,93 @@
+name: validate-cbs-latest-tag (reusable)
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+
+      - name: Validate latest create-benchmark-service tag pin
+        run: |
+          set -euo pipefail
+
+          dependency_name="create-benchmark-service"
+          repository_url="https://github.com/vals-ai/create-benchmark-service.git"
+
+          cbs_requirement="$(
+            uv run --no-project python - <<'PY'
+          import tomllib
+          from pathlib import Path
+          from urllib.parse import parse_qs, urlsplit, urlunsplit
+
+          dependency_name = "create-benchmark-service"
+          lock = tomllib.loads(Path("uv.lock").read_text())
+
+          for package in lock["package"]:
+              if package["name"] != dependency_name:
+                  continue
+              source_git = package["source"]["git"]
+              split_url = urlsplit(source_git)
+              repository_url = urlunsplit(
+                  (split_url.scheme, split_url.netloc, split_url.path, "", "")
+              )
+              query = parse_qs(split_url.query)
+              ref = split_url.fragment or query.get(
+                  "tag", query.get("rev", query.get("branch", [""]))
+              )[0]
+              if not ref:
+                  raise SystemExit(f"{dependency_name} lock entry has no git ref")
+              print(f"{dependency_name} @ git+{repository_url}@{ref}")
+              break
+          else:
+              raise SystemExit(f"{dependency_name} was not found in uv.lock")
+          PY
+          )"
+
+          uv venv .cbs-check-venv --python 3.12
+          uv pip install --python .cbs-check-venv/bin/python --no-deps "${cbs_requirement}"
+
+          latest_tag="$(
+            git ls-remote --tags --sort=-version:refname \
+              "${repository_url}" "refs/tags/v*" \
+              | grep -v '\^{}$' \
+              | head -1 \
+              | awk '{print $2}' \
+              | sed 's|refs/tags/||'
+          )"
+
+          if [ -z "${latest_tag}" ]; then
+            echo "::error::No v* tags found for ${repository_url}"
+            exit 1
+          fi
+
+          installed_version="$(
+            .cbs-check-venv/bin/python - "${dependency_name}" <<'PY'
+          import importlib.metadata
+          import sys
+
+          print(importlib.metadata.version(sys.argv[1]))
+          PY
+          )"
+          latest_version="${latest_tag#v}"
+
+          echo "Installed ${dependency_name} version: ${installed_version}"
+          echo "Latest ${dependency_name} tag: ${latest_tag}"
+
+          if [ "${installed_version}" != "${latest_version}" ]; then
+            echo "::error::create-benchmark-service package is required to be latest, run 'uv add \"create-benchmark-service @ git+https://github.com/vals-ai/create-benchmark-service.git@${latest_tag}\"' to update the package and try again."
+            exit 1
+          fi
