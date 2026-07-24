@@ -16,15 +16,18 @@ jobs:
         with:
           python-version: "3.12"
 
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+
       - name: Validate latest create-benchmark-service tag pin
         run: |
           set -euo pipefail
 
           dependency_name="create-benchmark-service"
           repository_url="https://github.com/vals-ai/create-benchmark-service.git"
-          pyproject_path="pyproject.toml"
 
-          test -f "${pyproject_path}"
+          uv sync --locked --no-install-project
 
           latest_tag="$(
             git ls-remote --tags --sort=-version:refname \
@@ -40,101 +43,20 @@ jobs:
             exit 1
           fi
 
-          current_pin="$(
-            python3 - "${pyproject_path}" "${dependency_name}" "${repository_url}" <<'PY'
-          import re
+          installed_version="$(
+            uv run --no-sync python - "${dependency_name}" <<'PY'
+          import importlib.metadata
           import sys
-          import tomllib
-          from pathlib import Path
-          from typing import Any
 
-          pyproject_path = Path(sys.argv[1])
-          dependency_name = sys.argv[2]
-          repository_url = sys.argv[3]
-
-          pyproject = tomllib.loads(pyproject_path.read_text())
-          normalized_name = re.sub(r"[-_.]+", "-", dependency_name).lower()
-
-          def normalize_name(name: str) -> str:
-              return re.sub(r"[-_.]+", "-", name).lower()
-
-          def iter_dependency_entries(value: Any):
-              if isinstance(value, list):
-                  yield from value
-              elif isinstance(value, dict):
-                  for name, spec in value.items():
-                      yield {name: spec}
-
-          def find_pin_from_pep508(entry: str) -> str | None:
-              match = re.match(r"\s*([A-Za-z0-9_.-]+)\s+@\s+git\+(.+)", entry)
-              if not match:
-                  return None
-              name, url = match.groups()
-              if normalize_name(name) != normalized_name:
-                  return None
-              if not url.startswith(repository_url):
-                  return None
-              if "@" not in url:
-                  return None
-              return url.rsplit("@", 1)[-1]
-
-          def find_pin_from_mapping(entry: dict[str, Any]) -> str | None:
-              for name, spec in entry.items():
-                  if normalize_name(name) != normalized_name or not isinstance(spec, dict):
-                      continue
-                  if spec.get("git") != repository_url:
-                      continue
-                  for key in ("tag", "rev", "branch"):
-                      value = spec.get(key)
-                      if isinstance(value, str):
-                          return value
-              return None
-
-          dependency_groups = [
-              pyproject.get("project", {}).get("dependencies", []),
-              pyproject.get("project", {}).get("optional-dependencies", {}),
-              pyproject.get("dependency-groups", {}),
-              pyproject.get("tool", {}).get("uv", {}).get("sources", {}),
-              pyproject.get("tool", {}).get("poetry", {}).get("dependencies", {}),
-          ]
-
-          pins: list[str] = []
-          for group in dependency_groups:
-              for entry in iter_dependency_entries(group):
-                  if isinstance(entry, str):
-                      pin = find_pin_from_pep508(entry)
-                  elif isinstance(entry, dict):
-                      pin = find_pin_from_mapping(entry)
-                  else:
-                      pin = None
-                  if pin is not None:
-                      pins.append(pin)
-
-          poetry_groups = pyproject.get("tool", {}).get("poetry", {}).get("group", {})
-          if isinstance(poetry_groups, dict):
-              for group in poetry_groups.values():
-                  dependencies = group.get("dependencies", {}) if isinstance(group, dict) else {}
-                  for entry in iter_dependency_entries(dependencies):
-                      pin = find_pin_from_mapping(entry) if isinstance(entry, dict) else None
-                      if pin is not None:
-                          pins.append(pin)
-
-          unique_pins = sorted(set(pins))
-          if not unique_pins:
-              sys.exit(
-                  f"{dependency_name} dependency using {repository_url} was not found in {pyproject_path}"
-              )
-          if len(unique_pins) > 1:
-              sys.exit(f"Multiple {dependency_name} pins found: {', '.join(unique_pins)}")
-
-          print(unique_pins[0])
+          print(importlib.metadata.version(sys.argv[1]))
           PY
           )"
+          latest_version="${latest_tag#v}"
 
-          echo "Current ${dependency_name} pin: ${current_pin}"
+          echo "Installed ${dependency_name} version: ${installed_version}"
           echo "Latest ${dependency_name} tag: ${latest_tag}"
 
-          if [ "${current_pin}" != "${latest_tag}" ]; then
-            echo "::error::${dependency_name} is pinned to ${current_pin}, but latest tag is ${latest_tag}. Update pyproject.toml and uv.lock."
+          if [ "${installed_version}" != "${latest_version}" ]; then
+            echo "::error::${dependency_name} ${installed_version} is installed, but latest tag is ${latest_tag}. Update pyproject.toml and uv.lock."
             exit 1
           fi
