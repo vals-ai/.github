@@ -88,6 +88,6 @@ jobs:
           echo "Latest ${dependency_name} tag: ${latest_tag}"
 
           if [ "${installed_version}" != "${latest_version}" ]; then
-            echo "::error::${dependency_name} ${installed_version} is installed, but latest tag is ${latest_tag}. Update pyproject.toml and uv.lock."
+            echo "::error::create-benchmark-service package is required to be latest, run 'uv add \"create-benchmark-service @ git+https://github.com/vals-ai/create-benchmark-service.git@${latest_tag}\"' to update the package and try again."
             exit 1
           fi
