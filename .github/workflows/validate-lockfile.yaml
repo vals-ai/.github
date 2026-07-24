@@ -13,11 +13,6 @@ on:
         required: false
         default: "3.12"
         type: string
-      submodules:
-        description: "Whether to initialize git submodules before checking the lockfile."
-        required: false
-        default: false
-        type: boolean
     secrets:
       GH_PAT:
         required: false
@@ -30,7 +25,6 @@ permissions:
 env:
   HAS_GH_PAT: ${{ secrets.GH_PAT != '' }}
   HAS_SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY != '' }}
-  USE_SUBMODULES: ${{ inputs.submodules }}
 
 jobs:
   validate:
@@ -61,7 +55,6 @@ jobs:
           git config --global url."https://x-access-token:${GH_PAT}@github.com/".insteadOf "https://github.com/"
 
       - name: Initialize submodules
-        if: env.USE_SUBMODULES == 'true'
         run: |
           mkdir -p ~/.ssh
           ssh-keyscan github.com >> ~/.ssh/known_hosts

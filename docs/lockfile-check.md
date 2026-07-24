@@ -39,14 +39,6 @@ jobs:
       project_path: valkyrie_service
 ```
 
-If the project has local path dependencies provided by git submodules, enable submodule checkout:
+The workflow initializes git submodules before checking the lockfile. This is a no-op for repositories without submodules.
 
-```yaml
-jobs:
-  validate:
-    uses: vals-ai/.github/.github/workflows/validate-lockfile.yaml@main
-    with:
-      submodules: true
-```
-
-Pass `GH_PAT` only for repos with private `https://github.com/...` git dependencies. Pass `SSH_PRIVATE_KEY` only for repos with private `git+ssh://git@github.com/...` or `ssh://git@github.com/...` dependencies. Public-only services can omit `secrets:` entirely.
+Pass `GH_PAT` only for repos with private `https://github.com/...` git dependencies. Pass `SSH_PRIVATE_KEY` only for repos with private `git+ssh://git@github.com/...`, `ssh://git@github.com/...`, or private SSH submodules. Public-only services can omit `secrets:` entirely.
