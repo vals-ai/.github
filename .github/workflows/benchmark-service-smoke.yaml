@@ -92,6 +92,7 @@ env:
   TRACKER_SERVICE_URL: https://benchmark-tracker-dev.vals.ai
   VALKYRIE_REF: prod
   VALKYRIE_CONFIG_SECRET_ID: devCIValkyrieConfigSecret
+  DESCOPE_PROJECT_ID_SECRET_ID: devBenchmarksInfraDescopeProjectId
   NO_MODEL_GATEWAY: ${{ inputs.no_model_gateway }}
   SERVICE_AUTH_REQUIRED: ${{ inputs.service_auth_required }}
   SMOKE_DESCOPE_TENANT: ${{ inputs.smoke_descope_tenant }}
@@ -345,6 +346,17 @@ jobs:
                   allowlist_json = json.dumps(allowlist, separators=(",", ":"))
                   print(f"DESCOPE_TENANT_ALLOWLIST_JSON={allowlist_json}", file=env_file)
           PY
+
+          if [ "${SERVICE_AUTH_REQUIRED}" = "true" ] &&
+            ! grep -q '^DESCOPE_PROJECT_ID=' "${benchmark_env_file}"; then
+            descope_project_id="$(
+              aws secretsmanager get-secret-value \
+                --secret-id "${DESCOPE_PROJECT_ID_SECRET_ID}" \
+                --query SecretString \
+                --output text
+            )"
+            printf 'DESCOPE_PROJECT_ID=%s\n' "${descope_project_id}" >> "${benchmark_env_file}"
+          fi
 
           valkyrie_python="$(head -n 1 "$(command -v valkyrie)")"
           valkyrie_python="${valkyrie_python#\#!}"
