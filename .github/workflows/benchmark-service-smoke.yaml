@@ -86,7 +86,7 @@ env:
   HEALTH_PATH: /health
   TRACKER_SERVICE_URL: https://benchmark-tracker-dev.vals.ai
   VALKYRIE_REF: prod
-  VALKYRIE_CONFIG_SECRET_ID: devBenchmarksInfraValkyrieConfig
+  VALKYRIE_CONFIG_SECRET_ID: devCIValkyrieConfigSecret
   NO_MODEL_GATEWAY: ${{ inputs.no_model_gateway }}
   SERVICE_AUTH_REQUIRED: ${{ inputs.service_auth_required }}
   SMOKE_AGENT_TIMEOUT_SECONDS: ${{ inputs.smoke_agent_timeout_seconds }}
