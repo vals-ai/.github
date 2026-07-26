@@ -323,15 +323,7 @@ jobs:
           from pathlib import Path
 
           env_path = Path(sys.argv[1])
-          existing_keys = {
-              line.partition("=")[0]
-              for line in env_path.read_text().splitlines()
-              if line.strip() and not line.lstrip().startswith("#") and "=" in line
-          }
-          if (
-              os.environ["SERVICE_AUTH_REQUIRED"].lower() == "true"
-              and "DESCOPE_TENANT_ALLOWLIST_JSON" not in existing_keys
-          ):
+          if os.environ["SERVICE_AUTH_REQUIRED"].lower() == "true":
               smoke_descope_tenant = os.environ["SMOKE_DESCOPE_TENANT"].strip()
               if not smoke_descope_tenant:
                   raise SystemExit("smoke_descope_tenant is required when service_auth_required is true")
@@ -342,6 +334,13 @@ jobs:
                       }
                   }
               }
+              lines = []
+              for line in env_path.read_text().splitlines():
+                  key, separator, _ = line.partition("=")
+                  if separator and key == "DESCOPE_TENANT_ALLOWLIST_JSON":
+                      continue
+                  lines.append(line)
+              env_path.write_text("\n".join(lines) + "\n")
               with env_path.open("a", encoding="utf-8") as env_file:
                   allowlist_json = json.dumps(allowlist, separators=(",", ":"))
                   print(f"DESCOPE_TENANT_ALLOWLIST_JSON={allowlist_json}", file=env_file)
