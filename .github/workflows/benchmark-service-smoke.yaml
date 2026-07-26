@@ -28,6 +28,11 @@ on:
         required: false
         default: false
         type: boolean
+      smoke_descope_tenant:
+        description: "Descope tenant allowed to call the locally-started benchmark service when auth is required."
+        required: false
+        default: "valkyrie-ci"
+        type: string
       smoke_agent_timeout_seconds:
         description: "Agent runtime timeout forced onto smoke tasks through the local benchmark-service proxy."
         required: false
@@ -89,6 +94,7 @@ env:
   VALKYRIE_CONFIG_SECRET_ID: devCIValkyrieConfigSecret
   NO_MODEL_GATEWAY: ${{ inputs.no_model_gateway }}
   SERVICE_AUTH_REQUIRED: ${{ inputs.service_auth_required }}
+  SMOKE_DESCOPE_TENANT: ${{ inputs.smoke_descope_tenant }}
   SMOKE_AGENT_TIMEOUT_SECONDS: ${{ inputs.smoke_agent_timeout_seconds }}
   BENCHMARK_SERVICE_ENV_INPUT: ${{ inputs.benchmark_service_env }}
   WAIT_ATTEMPTS: "90"
@@ -324,9 +330,12 @@ jobs:
               os.environ["SERVICE_AUTH_REQUIRED"].lower() == "true"
               and "DESCOPE_TENANT_ALLOWLIST_JSON" not in existing_keys
           ):
+              smoke_descope_tenant = os.environ["SMOKE_DESCOPE_TENANT"].strip()
+              if not smoke_descope_tenant:
+                  raise SystemExit("smoke_descope_tenant is required when service_auth_required is true")
               allowlist = {
                   "tenants": {
-                      "valkyrie-ci": {
+                      smoke_descope_tenant: {
                           "datasets": [os.environ["SMOKE_DATASET"]],
                       }
                   }
