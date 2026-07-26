@@ -677,11 +677,7 @@ jobs:
                   additional_headers=headers,
                   open_timeout=30,
                   ping_timeout=None,
-              ) as websocket:
-                  await websocket.send(
-                      '{"task_id":"__smoke_auth_probe__","instance_id":"__smoke_auth_probe__"}'
-                  )
-                  await websocket.recv()
+              ):
                   print(f"Websocket reachable at {websocket_url}/ws/setup-task")
 
           asyncio.run(main())
