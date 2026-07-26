@@ -1,0 +1,209 @@
+name: retry evaluation (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      run_id:
+        description: "Completed dev run ID in the valkyrie-cli organization."
+        required: true
+        type: string
+    secrets:
+      VALKYRIE_AWS_ROLE_ARN:
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: retry-eval-${{ inputs.run_id }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  RUN_ID: ${{ inputs.run_id }}
+  TRACKER_SERVICE_URL: https://benchmark-tracker-dev.vals.ai
+  VALKYRIE_CONFIG_SECRET_ID: devCIValkyrieConfigSecret
+
+jobs:
+  retry-eval:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+
+    steps:
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v8.1.0
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.VALKYRIE_AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install Valkyrie
+        run: |
+          uv tool install --force "git+https://github.com/vals-ai/Valkyrie.git@prod"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Configure Valkyrie SDK
+        run: |
+          set -euo pipefail
+
+          mkdir -p ~/.config/valkyrie
+          aws secretsmanager get-secret-value \
+            --secret-id "${VALKYRIE_CONFIG_SECRET_ID}" \
+            --query SecretString \
+            --output text > ~/.config/valkyrie/valkyrie.yaml
+
+          {
+            printf '\n'
+            printf 'AWS_ACCESS_KEY_ID: "%s"\n' "${AWS_ACCESS_KEY_ID}"
+            printf 'AWS_SECRET_ACCESS_KEY: "%s"\n' "${AWS_SECRET_ACCESS_KEY}"
+            printf 'AWS_SESSION_TOKEN: "%s"\n' "${AWS_SESSION_TOKEN}"
+            printf 'AWS_DEFAULT_REGION: "%s"\n' "${AWS_REGION}"
+          } >> ~/.config/valkyrie/valkyrie.yaml
+
+      - name: Validate completed run
+        run: |
+          set -euo pipefail
+
+          valk run fetch "$RUN_ID" --format json > "$RUNNER_TEMP/before-run.json"
+          valk run results "$RUN_ID" --path "$RUNNER_TEMP/before-results.json"
+
+          jq -e '
+            .status == "FINISHED"
+            and ((.task_errors // {}) | length == 0)
+            and ((.evaluation_results // {}) | length > 0)
+          ' "$RUNNER_TEMP/before-results.json"
+
+          jq -r '(.evaluation_results // {}) | keys[]' \
+            "$RUNNER_TEMP/before-results.json" > "$RUNNER_TEMP/task-ids.txt"
+
+          task_count="$(wc -l < "$RUNNER_TEMP/task-ids.txt" | tr -d ' ')"
+          total_tasks="$(jq -r '.total_tasks' "$RUNNER_TEMP/before-run.json")"
+          if [[ "$task_count" -ne "$total_tasks" ]]; then
+            echo "::error::Found $task_count of $total_tasks evaluated task IDs."
+            exit 1
+          fi
+
+      - name: Retry evaluation
+        run: |
+          set -euo pipefail
+
+          valkyrie_python="$(head -n 1 "$(command -v valkyrie)")"
+          valkyrie_python="${valkyrie_python#\#!}"
+
+          "$valkyrie_python" - <<'PY'
+          import asyncio
+          import os
+          import sys
+          from pathlib import Path
+          from uuid import UUID
+
+          from valkyrie.sdk import BenchmarkStatus, TaskStatus, ValkyrieClient, ValkyrieConfig
+
+          GENERATION_STATUSES = {
+              TaskStatus.PENDING,
+              TaskStatus.BUILDING,
+              TaskStatus.IN_PROGRESS,
+          }
+
+          async def main() -> None:
+              run_id = UUID(os.environ["RUN_ID"])
+              task_ids = Path(os.environ["RUNNER_TEMP"], "task-ids.txt").read_text().splitlines()
+              config = ValkyrieConfig.from_yaml()
+              service_headers = {}
+              if config.api_key and (api_key := config.api_key.get_secret_value()):
+                  service_headers["X-Descope-Api-Key"] = api_key
+
+              async with ValkyrieClient(config) as client:
+                  await client.runs.retry(
+                      run_id,
+                      task_ids=task_ids,
+                      service_headers=service_headers,
+                  )
+                  tasks = [await client.benchmarks.task(run_id, task_id) for task_id in task_ids]
+                  generation_tasks = [
+                      task.task_id for task in tasks if task.status in GENERATION_STATUSES
+                  ]
+
+                  if generation_tasks:
+                      await client.runs.stop(run_id, force=True, task_ids=generation_tasks)
+                      for _ in range(30):
+                          stopped_tasks = [
+                              await client.benchmarks.task(run_id, task_id)
+                              for task_id in generation_tasks
+                          ]
+                          if all(
+                              task.status in {TaskStatus.STOPPED, TaskStatus.ERROR}
+                              for task in stopped_tasks
+                          ):
+                              statuses = ", ".join(
+                                  f"{task.task_id}={task.status.value}" for task in stopped_tasks
+                              )
+                              sys.exit(
+                                  "Retry fell back to generation and was force-stopped: "
+                                  f"{statuses}"
+                              )
+                          await asyncio.sleep(1)
+                      sys.exit("Retry fell back to generation and force-stop did not finish")
+
+                  unexpected = [
+                      f"{task.task_id}={task.status.value}"
+                      for task in tasks
+                      if task.status != TaskStatus.EVALUATING
+                  ]
+                  if unexpected:
+                      sys.exit(f"Retry did not enter EVALUATING: {', '.join(unexpected)}")
+
+                  print(f"All {len(tasks)} tasks entered EVALUATING")
+                  async for update in client.runs.stream(run_id):
+                      print(f"{update.details.status.value}: {update.details.task_breakdown}")
+
+                  final_run = await client.runs.fetch(run_id)
+                  if final_run.details.status != BenchmarkStatus.FINISHED:
+                      sys.exit(f"Retried evaluation ended with {final_run.details.status.value}")
+
+          asyncio.run(main())
+          PY
+
+      - name: Verify retried results
+        run: |
+          set -euo pipefail
+
+          valk run results "$RUN_ID" --path "$RUNNER_TEMP/after-results.json"
+          total_tasks="$(jq -r '.total_tasks' "$RUNNER_TEMP/before-run.json")"
+
+          jq -e \
+            --argjson total_tasks "$total_tasks" \
+            --slurpfile before "$RUNNER_TEMP/before-results.json" \
+            '
+              . as $after
+              | .status == "FINISHED"
+              and ((.task_errors // {}) | length == 0)
+              and ((.evaluation_results // {}) | length == $total_tasks)
+              and (.finished_at != $before[0].finished_at)
+              and (.final_evaluation != null)
+              and (
+                [
+                  $after.evaluation_results
+                  | to_entries[]
+                  | . as $result
+                  | $before[0].evaluation_results[$result.key] as $previous
+                  | ($previous.task_breakdown.agent_run_duration != null)
+                    and (
+                      ($result.value.attempts // 1)
+                      == (($previous.attempts // 1) + 1)
+                    )
+                    and (
+                      $result.value.task_breakdown.agent_run_duration
+                      == $previous.task_breakdown.agent_run_duration
+                    )
+                ]
+                | all
+              )
+            ' \
+            "$RUNNER_TEMP/after-results.json"
