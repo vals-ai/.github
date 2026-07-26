@@ -114,9 +114,17 @@ jobs:
           async def main() -> None:
               run_id = UUID(os.environ["RUN_ID"])
               task_ids = Path(os.environ["RUNNER_TEMP"], "task-ids.txt").read_text().splitlines()
+              config = ValkyrieConfig.from_yaml()
+              service_headers = {}
+              if config.api_key and (api_key := config.api_key.get_secret_value()):
+                  service_headers["X-Descope-Api-Key"] = api_key
 
-              async with ValkyrieClient(ValkyrieConfig.from_yaml()) as client:
-                  await client.runs.retry(run_id, task_ids=task_ids)
+              async with ValkyrieClient(config) as client:
+                  await client.runs.retry(
+                      run_id,
+                      task_ids=task_ids,
+                      service_headers=service_headers,
+                  )
                   tasks = [await client.benchmarks.task(run_id, task_id) for task_id in task_ids]
                   generation_tasks = [
                       task.task_id for task in tasks if task.status in GENERATION_STATUSES
