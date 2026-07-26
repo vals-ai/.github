@@ -28,6 +28,11 @@ on:
         required: false
         default: false
         type: boolean
+      smoke_descope_tenant:
+        description: "Descope tenant allowed to call the locally-started benchmark service when auth is required."
+        required: false
+        default: "valkyrie-ci"
+        type: string
       smoke_agent_timeout_seconds:
         description: "Agent runtime timeout forced onto smoke tasks through the local benchmark-service proxy."
         required: false
@@ -87,8 +92,10 @@ env:
   TRACKER_SERVICE_URL: https://benchmark-tracker-dev.vals.ai
   VALKYRIE_REF: prod
   VALKYRIE_CONFIG_SECRET_ID: devCIValkyrieConfigSecret
+  DESCOPE_PROJECT_ID_SECRET_ID: devBenchmarksInfraDescopeProjectId
   NO_MODEL_GATEWAY: ${{ inputs.no_model_gateway }}
   SERVICE_AUTH_REQUIRED: ${{ inputs.service_auth_required }}
+  SMOKE_DESCOPE_TENANT: ${{ inputs.smoke_descope_tenant }}
   SMOKE_AGENT_TIMEOUT_SECONDS: ${{ inputs.smoke_agent_timeout_seconds }}
   BENCHMARK_SERVICE_ENV_INPUT: ${{ inputs.benchmark_service_env }}
   WAIT_ATTEMPTS: "90"
@@ -307,6 +314,59 @@ jobs:
 
           if [ -n "${BENCHMARK_SERVICE_ENV_INPUT:-}" ]; then
             printf '%s\n' "${BENCHMARK_SERVICE_ENV_INPUT}" >> "${benchmark_env_file}"
+          fi
+
+          python3 - "${benchmark_env_file}" <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          env_path = Path(sys.argv[1])
+          if os.environ["SERVICE_AUTH_REQUIRED"].lower() == "true":
+              smoke_descope_tenant = os.environ["SMOKE_DESCOPE_TENANT"].strip()
+              if not smoke_descope_tenant:
+                  raise SystemExit("smoke_descope_tenant is required when service_auth_required is true")
+              allowlist = {
+                  "tenants": {
+                      smoke_descope_tenant: {
+                          "datasets": [os.environ["SMOKE_DATASET"]],
+                      }
+                  }
+              }
+              lines = []
+              for line in env_path.read_text().splitlines():
+                  key, separator, _ = line.partition("=")
+                  if separator and key == "DESCOPE_TENANT_ALLOWLIST_JSON":
+                      continue
+                  lines.append(line)
+              env_path.write_text("\n".join(lines) + "\n")
+              with env_path.open("a", encoding="utf-8") as env_file:
+                  allowlist_json = json.dumps(allowlist, separators=(",", ":"))
+                  print(f"DESCOPE_TENANT_ALLOWLIST_JSON={allowlist_json}", file=env_file)
+          PY
+
+          if [ "${SERVICE_AUTH_REQUIRED}" = "true" ]; then
+            descope_project_id="$(
+              aws secretsmanager get-secret-value \
+                --secret-id "${DESCOPE_PROJECT_ID_SECRET_ID}" \
+                --query SecretString \
+                --output text
+            )"
+            python3 - "${benchmark_env_file}" <<'PY'
+          import sys
+          from pathlib import Path
+
+          env_path = Path(sys.argv[1])
+          lines = []
+          for line in env_path.read_text().splitlines():
+              key, separator, _ = line.partition("=")
+              if separator and key == "DESCOPE_PROJECT_ID":
+                  continue
+              lines.append(line)
+          env_path.write_text("\n".join(lines) + "\n")
+          PY
+            printf 'DESCOPE_PROJECT_ID=%s\n' "${descope_project_id}" >> "${benchmark_env_file}"
           fi
 
           valkyrie_python="$(head -n 1 "$(command -v valkyrie)")"
@@ -632,6 +692,40 @@ jobs:
                   print(f"Websocket reachable at {websocket_url}/ws/setup-task")
 
           asyncio.run(main())
+          PY
+
+      - name: Verify task auth preflight
+        run: |
+          set -euo pipefail
+
+          valkyrie_python="$(head -n 1 "$(command -v valkyrie)")"
+          valkyrie_python="${valkyrie_python#\#!}"
+
+          "$valkyrie_python" - <<'PY'
+          import os
+          import urllib.parse
+          import urllib.request
+
+          from valkyrie.sdk import ValkyrieConfig
+
+          config = ValkyrieConfig.from_yaml()
+          headers = {}
+          if config.api_key and (api_key := config.api_key.get_secret_value()):
+              headers["X-Descope-Api-Key"] = api_key
+
+          params = urllib.parse.urlencode(
+              {
+                  "task_ids": os.environ["SMOKE_TASK_ID"],
+                  "dataset": os.environ["SMOKE_DATASET"],
+              }
+          )
+          request = urllib.request.Request(
+              f"{os.environ['SERVICE_URL']}/verify-task-ids?{params}",
+              headers=headers,
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              print(f"Task auth preflight returned {response.status}")
+              print(response.read().decode("utf-8"))
           PY
 
       - name: Start one-task Valkyrie smoke run
