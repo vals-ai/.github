@@ -318,6 +318,7 @@ jobs:
           python3 - "${benchmark_env_file}" <<'PY'
           import json
           import os
+          import sys
           from pathlib import Path
 
           env_path = Path(sys.argv[1])
