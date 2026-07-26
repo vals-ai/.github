@@ -347,14 +347,26 @@ jobs:
                   print(f"DESCOPE_TENANT_ALLOWLIST_JSON={allowlist_json}", file=env_file)
           PY
 
-          if [ "${SERVICE_AUTH_REQUIRED}" = "true" ] &&
-            ! grep -q '^DESCOPE_PROJECT_ID=' "${benchmark_env_file}"; then
+          if [ "${SERVICE_AUTH_REQUIRED}" = "true" ]; then
             descope_project_id="$(
               aws secretsmanager get-secret-value \
                 --secret-id "${DESCOPE_PROJECT_ID_SECRET_ID}" \
                 --query SecretString \
                 --output text
             )"
+            python3 - "${benchmark_env_file}" <<'PY'
+          import sys
+          from pathlib import Path
+
+          env_path = Path(sys.argv[1])
+          lines = []
+          for line in env_path.read_text().splitlines():
+              key, separator, _ = line.partition("=")
+              if separator and key == "DESCOPE_PROJECT_ID":
+                  continue
+              lines.append(line)
+          env_path.write_text("\n".join(lines) + "\n")
+          PY
             printf 'DESCOPE_PROJECT_ID=%s\n' "${descope_project_id}" >> "${benchmark_env_file}"
           fi
 
