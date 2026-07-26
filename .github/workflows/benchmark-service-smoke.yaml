@@ -309,6 +309,33 @@ jobs:
             printf '%s\n' "${BENCHMARK_SERVICE_ENV_INPUT}" >> "${benchmark_env_file}"
           fi
 
+          python3 - "${benchmark_env_file}" <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          env_path = Path(sys.argv[1])
+          existing_keys = {
+              line.partition("=")[0]
+              for line in env_path.read_text().splitlines()
+              if line.strip() and not line.lstrip().startswith("#") and "=" in line
+          }
+          if (
+              os.environ["SERVICE_AUTH_REQUIRED"].lower() == "true"
+              and "DESCOPE_TENANT_ALLOWLIST_JSON" not in existing_keys
+          ):
+              allowlist = {
+                  "tenants": {
+                      "valkyrie-ci": {
+                          "datasets": [os.environ["SMOKE_DATASET"]],
+                      }
+                  }
+              }
+              with env_path.open("a", encoding="utf-8") as env_file:
+                  allowlist_json = json.dumps(allowlist, separators=(",", ":"))
+                  print(f"DESCOPE_TENANT_ALLOWLIST_JSON={allowlist_json}", file=env_file)
+          PY
+
           valkyrie_python="$(head -n 1 "$(command -v valkyrie)")"
           valkyrie_python="${valkyrie_python#\#!}"
           "$valkyrie_python" - "${benchmark_env_file}" <<'PY'

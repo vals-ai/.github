@@ -55,6 +55,8 @@ JUDGE_MODEL=openai/gpt-5.5
 
 The workflow automatically passes `VALS_API_KEY` from the Valkyrie config secret to the service container. Set `VALS_API_KEY` in `BENCHMARK_SERVICE_ENV` only when a service needs to override that value.
 
+When `service_auth_required: true`, the workflow injects a default `DESCOPE_TENANT_ALLOWLIST_JSON` for the `valkyrie-ci` tenant and the configured smoke dataset. Set `DESCOPE_TENANT_ALLOWLIST_JSON` in `BENCHMARK_SERVICE_ENV` only when a service needs a custom allowlist.
+
 `BENCHMARK_SERVICE_AWS_SECRET_REFS` fetches service runtime secrets from AWS Secrets Manager after GitHub OIDC has assumed the benchmark smoke role. Use one line per env var:
 
 ```dotenv
