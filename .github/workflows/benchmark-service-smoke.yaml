@@ -38,6 +38,11 @@ on:
         required: false
         default: 180
         type: number
+      retry_evaluation_guard:
+        description: "Retry the smoke task and fail if it falls back to generation."
+        required: false
+        default: false
+        type: boolean
       benchmark_service_env:
         description: "Non-secret KEY=value lines appended to the benchmark service env file."
         required: false
@@ -880,6 +885,86 @@ jobs:
                   sys.exit(f"Run did not finish successfully: {final_status}")
               if final_counts.get(TaskStatus.ERROR.value, 0) or final_counts.get(TaskStatus.STOPPED.value, 0):
                   sys.exit(f"Smoke task failed: {final_counts}")
+
+          asyncio.run(main())
+          PY
+
+      - name: Verify retry starts at evaluation
+        if: ${{ inputs.retry_evaluation_guard }}
+        run: |
+          set -euo pipefail
+
+          valkyrie_python="$(head -n 1 "$(command -v valkyrie)")"
+          valkyrie_python="${valkyrie_python#\#!}"
+
+          "$valkyrie_python" - <<'PY'
+          import asyncio
+          import os
+          import sys
+          from uuid import UUID
+
+          from valkyrie.sdk import TaskStatus, ValkyrieClient, ValkyrieConfig
+
+          GENERATION_STATUSES = {
+              TaskStatus.PENDING,
+              TaskStatus.BUILDING,
+              TaskStatus.IN_PROGRESS,
+          }
+
+          async def stop_generation(
+              client: ValkyrieClient,
+              run_id: UUID,
+              task_id: str,
+              status: TaskStatus,
+          ) -> None:
+              await client.runs.stop(run_id, force=True, task_ids=[task_id])
+              for _ in range(30):
+                  stopped_task = await client.benchmarks.task(run_id, task_id)
+                  if stopped_task.status in {TaskStatus.STOPPED, TaskStatus.ERROR}:
+                      sys.exit(
+                          f"Retry entered {status.value} instead of EVALUATING; "
+                          f"{task_id} was force-stopped with status {stopped_task.status.value}"
+                      )
+                  await asyncio.sleep(1)
+              sys.exit(
+                  f"Retry entered {status.value} instead of EVALUATING; "
+                  f"force-stop did not finish for {task_id}"
+              )
+
+          async def main() -> None:
+              run_id = UUID(os.environ["VALKYRIE_RUN_ID"])
+              task_id = os.environ["SMOKE_TASK_ID"]
+              config = ValkyrieConfig.from_yaml()
+              config.custom_benchmark_services[os.environ["BENCHMARK_NAME"]] = os.environ["SERVICE_URL"]
+              service_headers = {}
+              if config.api_key and (api_key := config.api_key.get_secret_value()):
+                  service_headers["X-Descope-Api-Key"] = api_key
+
+              async with ValkyrieClient(config) as client:
+                  await client.runs.retry(run_id, task_ids=[task_id], service_headers=service_headers)
+                  saw_evaluating = False
+
+                  for _ in range(int(os.environ["WAIT_ATTEMPTS"])):
+                      task = await client.benchmarks.task(run_id, task_id)
+                      print(f"Retry task status: {task.status.value}")
+                      if task.status in GENERATION_STATUSES:
+                          await stop_generation(client, run_id, task_id, task.status)
+                      if task.status == TaskStatus.EVALUATING:
+                          saw_evaluating = True
+                      if task.status == TaskStatus.FINISHED:
+                          if not saw_evaluating:
+                              sys.exit("Retried task finished before EVALUATING was observed")
+                          if task.evaluation_result is None:
+                              sys.exit("Retried task finished without an evaluation result")
+                          print("Retry completed successfully from EVALUATING")
+                          return
+                      if task.status in {TaskStatus.ERROR, TaskStatus.STOPPED}:
+                          sys.exit(f"Retried evaluation ended with {task.status.value}: {task.error_message or ''}")
+                      if task.status != TaskStatus.EVALUATING:
+                          sys.exit(f"Unexpected retry task status: {task.status.value}")
+                      await asyncio.sleep(30)
+
+              sys.exit("Retried evaluation did not finish before timeout")
 
           asyncio.run(main())
           PY
