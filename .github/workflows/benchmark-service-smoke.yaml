@@ -665,10 +665,48 @@ jobs:
                   additional_headers=headers,
                   open_timeout=30,
                   ping_timeout=None,
-              ):
+              ) as websocket:
+                  await websocket.send(
+                      '{"task_id":"__smoke_auth_probe__","instance_id":"__smoke_auth_probe__"}'
+                  )
+                  await websocket.recv()
                   print(f"Websocket reachable at {websocket_url}/ws/setup-task")
 
           asyncio.run(main())
+          PY
+
+      - name: Verify task auth preflight
+        run: |
+          set -euo pipefail
+
+          valkyrie_python="$(head -n 1 "$(command -v valkyrie)")"
+          valkyrie_python="${valkyrie_python#\#!}"
+
+          "$valkyrie_python" - <<'PY'
+          import os
+          import urllib.parse
+          import urllib.request
+
+          from valkyrie.sdk import ValkyrieConfig
+
+          config = ValkyrieConfig.from_yaml()
+          headers = {}
+          if config.api_key and (api_key := config.api_key.get_secret_value()):
+              headers["X-Descope-Api-Key"] = api_key
+
+          params = urllib.parse.urlencode(
+              {
+                  "task_ids": os.environ["SMOKE_TASK_ID"],
+                  "dataset": os.environ["SMOKE_DATASET"],
+              }
+          )
+          request = urllib.request.Request(
+              f"{os.environ['SERVICE_URL']}/verify-task-ids?{params}",
+              headers=headers,
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              print(f"Task auth preflight returned {response.status}")
+              print(response.read().decode("utf-8"))
           PY
 
       - name: Start one-task Valkyrie smoke run
