@@ -7,6 +7,14 @@ on:
         description: "Completed dev run ID in the valkyrie-cli organization."
         required: true
         type: string
+      benchmark_name:
+        description: "Expected benchmark name for the source run."
+        required: true
+        type: string
+      benchmark_url:
+        description: "Replacement benchmark service URL used for the evaluation retry."
+        required: true
+        type: string
     secrets:
       VALKYRIE_AWS_ROLE_ARN:
         required: true
@@ -21,8 +29,11 @@ concurrency:
 
 env:
   AWS_REGION: us-east-1
+  BENCHMARK_URL: ${{ inputs.benchmark_url }}
+  EXPECTED_BENCHMARK_NAME: ${{ inputs.benchmark_name }}
   RUN_ID: ${{ inputs.run_id }}
   TRACKER_SERVICE_URL: https://benchmark-tracker-dev.vals.ai
+  VALKYRIE_REF: dev
   VALKYRIE_CONFIG_SECRET_ID: devCIValkyrieConfigSecret
 
 jobs:
@@ -45,7 +56,7 @@ jobs:
 
       - name: Install Valkyrie
         run: |
-          uv tool install --force "git+https://github.com/vals-ai/Valkyrie.git@prod"
+          uv tool install --force "git+https://github.com/vals-ai/Valkyrie.git@${VALKYRIE_REF}"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Configure Valkyrie SDK
@@ -70,24 +81,43 @@ jobs:
         run: |
           set -euo pipefail
 
+          if [ -z "$BENCHMARK_URL" ]; then
+            echo "::error::benchmark_url is required."
+            exit 1
+          fi
+
           valk run fetch "$RUN_ID" --format json > "$RUNNER_TEMP/before-run.json"
           valk run results "$RUN_ID" --path "$RUNNER_TEMP/before-results.json"
 
+          benchmark_name="$(jq -r '.benchmark_name' "$RUNNER_TEMP/before-run.json")"
+          if [ "$benchmark_name" != "$EXPECTED_BENCHMARK_NAME" ]; then
+            echo "::error::Expected $EXPECTED_BENCHMARK_NAME run; got $benchmark_name."
+            exit 1
+          fi
+
           jq -e '
             .status == "FINISHED"
-            and ((.task_errors // {}) | length == 0)
             and ((.evaluation_results // {}) | length > 0)
           ' "$RUNNER_TEMP/before-results.json"
 
-          jq -r '(.evaluation_results // {}) | keys[]' \
+          jq -er '
+            (.evaluation_results // {})
+            | to_entries
+            | map(
+                select(
+                  (.value.resolved == true)
+                  or (.value.score == 1)
+                  or (.value.reward == 1)
+                  or (.value.rewards.score == 1)
+                  or (.value.verifier_result.rewards.score == 1)
+                )
+              )
+            | first
+            | .key // empty
+          ' \
             "$RUNNER_TEMP/before-results.json" > "$RUNNER_TEMP/task-ids.txt"
 
-          task_count="$(wc -l < "$RUNNER_TEMP/task-ids.txt" | tr -d ' ')"
-          total_tasks="$(jq -r '.total_tasks' "$RUNNER_TEMP/before-run.json")"
-          if [[ "$task_count" -ne "$total_tasks" ]]; then
-            echo "::error::Found $task_count of $total_tasks evaluated task IDs."
-            exit 1
-          fi
+          echo "Selected passing task: $(cat "$RUNNER_TEMP/task-ids.txt")"
 
       - name: Retry evaluation
         run: |
@@ -113,7 +143,7 @@ jobs:
 
           async def main() -> None:
               run_id = UUID(os.environ["RUN_ID"])
-              task_ids = Path(os.environ["RUNNER_TEMP"], "task-ids.txt").read_text().splitlines()
+              task_id = Path(os.environ["RUNNER_TEMP"], "task-ids.txt").read_text().strip()
               config = ValkyrieConfig.from_yaml()
               service_headers = {}
               if config.api_key and (api_key := config.api_key.get_secret_value()):
@@ -122,10 +152,11 @@ jobs:
               async with ValkyrieClient(config) as client:
                   await client.runs.retry(
                       run_id,
-                      task_ids=task_ids,
+                      task_ids=[task_id],
                       service_headers=service_headers,
+                      benchmark_url=os.environ["BENCHMARK_URL"],
                   )
-                  tasks = [await client.benchmarks.task(run_id, task_id) for task_id in task_ids]
+                  tasks = [await client.benchmarks.task(run_id, task_id)]
                   generation_tasks = [
                       task.task_id for task in tasks if task.status in GENERATION_STATUSES
                   ]
@@ -175,35 +206,35 @@ jobs:
           set -euo pipefail
 
           valk run results "$RUN_ID" --path "$RUNNER_TEMP/after-results.json"
-          total_tasks="$(jq -r '.total_tasks' "$RUNNER_TEMP/before-run.json")"
+          task_id="$(cat "$RUNNER_TEMP/task-ids.txt")"
 
           jq -e \
-            --argjson total_tasks "$total_tasks" \
+            --arg task_id "$task_id" \
             --slurpfile before "$RUNNER_TEMP/before-results.json" \
             '
               . as $after
+              | $after.evaluation_results[$task_id] as $result
+              | $before[0].evaluation_results[$task_id] as $previous
               | .status == "FINISHED"
-              and ((.task_errors // {}) | length == 0)
-              and ((.evaluation_results // {}) | length == $total_tasks)
+              and (($after.task_errors // {})[$task_id] == null)
               and (.finished_at != $before[0].finished_at)
               and (.final_evaluation != null)
+              and ($result != null)
+              and ($previous.task_breakdown.agent_run_duration != null)
               and (
-                [
-                  $after.evaluation_results
-                  | to_entries[]
-                  | . as $result
-                  | $before[0].evaluation_results[$result.key] as $previous
-                  | ($previous.task_breakdown.agent_run_duration != null)
-                    and (
-                      ($result.value.attempts // 1)
-                      == (($previous.attempts // 1) + 1)
-                    )
-                    and (
-                      $result.value.task_breakdown.agent_run_duration
-                      == $previous.task_breakdown.agent_run_duration
-                    )
-                ]
-                | all
+                ($result.attempts // 1)
+                == (($previous.attempts // 1) + 1)
+              )
+              and (
+                $result.task_breakdown.agent_run_duration
+                == $previous.task_breakdown.agent_run_duration
+              )
+              and (
+                ($result.resolved == true)
+                or ($result.score == 1)
+                or ($result.reward == 1)
+                or ($result.rewards.score == 1)
+                or ($result.verifier_result.rewards.score == 1)
               )
             ' \
             "$RUNNER_TEMP/after-results.json"
