@@ -4,12 +4,62 @@ on:
   workflow_call:
     inputs:
       run_id:
-        description: "Completed dev run ID in the valkyrie-cli organization."
+        description: "Completed dev run ID containing a passing task."
         required: true
+        type: string
+      benchmark_name:
+        description: "Expected benchmark name for the source run."
+        required: true
+        type: string
+      docker_build_ssh:
+        description: "Enable Docker BuildKit SSH forwarding."
+        required: false
+        default: false
+        type: boolean
+      checkout_submodules:
+        description: "Checkout git submodules before building the service."
+        required: false
+        default: false
+        type: boolean
+      service_auth_required:
+        description: "Require Descope auth on the local service."
+        required: false
+        default: false
+        type: boolean
+      smoke_descope_tenant:
+        description: "Descope tenant allowed to call the local service."
+        required: false
+        default: valkyrie-ci
+        type: string
+      benchmark_service_env:
+        description: "Non-secret KEY=value lines appended to the service environment."
+        required: false
+        default: ""
+        type: string
+      valkyrie_ref:
+        description: "Valkyrie git ref installed by the workflow."
+        required: false
+        default: prod
         type: string
     secrets:
       VALKYRIE_AWS_ROLE_ARN:
         required: true
+      NGROK_AUTHTOKEN:
+        required: true
+      NGROK_URL:
+        required: false
+      NGROK_PUBLIC_URL:
+        required: false
+      SMOKE_DATASET:
+        required: false
+      BENCHMARK_SERVICE_ENV:
+        required: false
+      BENCHMARK_SERVICE_AWS_SECRET_REFS:
+        required: false
+      SSH_PRIVATE_KEY:
+        required: false
+      GH_PAT:
+        required: false
 
 permissions:
   contents: read
@@ -21,21 +71,34 @@ concurrency:
 
 env:
   AWS_REGION: us-east-1
+  BENCHMARK_NAME_INPUT: ${{ inputs.benchmark_name }}
+  CONTAINER_PORT: "8001"
+  DESCOPE_PROJECT_ID_SECRET_ID: devBenchmarksInfraDescopeProjectId
+  EXPECTED_BENCHMARK_NAME: ${{ inputs.benchmark_name }}
+  HEALTH_PATH: /health
+  INTERNAL_SERVICE_PORT: "18001"
   RUN_ID: ${{ inputs.run_id }}
+  SERVICE_PORT: "8001"
   TRACKER_SERVICE_URL: https://benchmark-tracker-dev.vals.ai
   VALKYRIE_CONFIG_SECRET_ID: devCIValkyrieConfigSecret
+  VALKYRIE_REF: ${{ inputs.valkyrie_ref }}
 
 jobs:
   retry-eval:
     runs-on: ubuntu-24.04
-    timeout-minutes: 55
+    timeout-minutes: 75
 
     steps:
+      - uses: actions/checkout@v6
+
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
       - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
 
       - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v6
@@ -45,7 +108,7 @@ jobs:
 
       - name: Install Valkyrie
         run: |
-          uv tool install --force "git+https://github.com/vals-ai/Valkyrie.git@prod"
+          uv tool install --force "git+https://github.com/vals-ai/Valkyrie.git@${VALKYRIE_REF}"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Configure Valkyrie SDK
@@ -66,6 +129,34 @@ jobs:
             printf 'AWS_DEFAULT_REGION: "%s"\n' "${AWS_REGION}"
           } >> ~/.config/valkyrie/valkyrie.yaml
 
+      - name: Configure Docker build SSH
+        if: ${{ inputs.docker_build_ssh }}
+        uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Checkout submodules
+        if: ${{ inputs.checkout_submodules }}
+        run: git submodule update --init --recursive
+
+      - name: Start local benchmark service
+        id: local-service
+        uses: vals-ai/.github/.github/actions/start-benchmark-service@jf/retry-eval-passed-task
+        with:
+          benchmark-name: ${{ inputs.benchmark_name }}
+          docker-build-ssh: ${{ inputs.docker_build_ssh }}
+          service-auth-required: ${{ inputs.service_auth_required }}
+          smoke-descope-tenant: ${{ inputs.smoke_descope_tenant }}
+          smoke-dataset: ${{ secrets.SMOKE_DATASET }}
+          smoke-agent-timeout-seconds: "0"
+          benchmark-service-env: ${{ secrets.BENCHMARK_SERVICE_ENV }}
+          benchmark-service-env-input: ${{ inputs.benchmark_service_env }}
+          benchmark-service-aws-secret-refs: ${{ secrets.BENCHMARK_SERVICE_AWS_SECRET_REFS }}
+          gh-pat: ${{ secrets.GH_PAT }}
+          ngrok-authtoken: ${{ secrets.NGROK_AUTHTOKEN }}
+          ngrok-url: ${{ secrets.NGROK_URL }}
+          ngrok-public-url: ${{ secrets.NGROK_PUBLIC_URL }}
+
       - name: Validate completed run
         run: |
           set -euo pipefail
@@ -73,23 +164,38 @@ jobs:
           valk run fetch "$RUN_ID" --format json > "$RUNNER_TEMP/before-run.json"
           valk run results "$RUN_ID" --path "$RUNNER_TEMP/before-results.json"
 
-          jq -e '
-            .status == "FINISHED"
-            and ((.task_errors // {}) | length == 0)
-            and ((.evaluation_results // {}) | length > 0)
-          ' "$RUNNER_TEMP/before-results.json"
-
-          jq -r '(.evaluation_results // {}) | keys[]' \
-            "$RUNNER_TEMP/before-results.json" > "$RUNNER_TEMP/task-ids.txt"
-
-          task_count="$(wc -l < "$RUNNER_TEMP/task-ids.txt" | tr -d ' ')"
-          total_tasks="$(jq -r '.total_tasks' "$RUNNER_TEMP/before-run.json")"
-          if [[ "$task_count" -ne "$total_tasks" ]]; then
-            echo "::error::Found $task_count of $total_tasks evaluated task IDs."
+          benchmark_name="$(jq -r '.benchmark_name' "$RUNNER_TEMP/before-run.json")"
+          if [ "$benchmark_name" != "$EXPECTED_BENCHMARK_NAME" ]; then
+            echo "::error::Expected $EXPECTED_BENCHMARK_NAME run; got $benchmark_name."
             exit 1
           fi
 
+          jq -e '
+            .status == "FINISHED"
+            and ((.evaluation_results // {}) | length > 0)
+          ' "$RUNNER_TEMP/before-results.json"
+
+          jq -er '
+            (.evaluation_results // {})
+            | to_entries
+            | map(
+                select(
+                  (.value.resolved == true)
+                  or (.value.score == 1)
+                  or (.value.reward == 1)
+                  or (.value.rewards.score == 1)
+                  or (.value.verifier_result.rewards.score == 1)
+                )
+              )
+            | first
+            | .key // empty
+          ' "$RUNNER_TEMP/before-results.json" > "$RUNNER_TEMP/task-ids.txt"
+
+          echo "Selected passing task: $(cat "$RUNNER_TEMP/task-ids.txt")"
+
       - name: Retry evaluation
+        env:
+          SERVICE_URL: ${{ steps.local-service.outputs.service-url }}
         run: |
           set -euo pipefail
 
@@ -110,58 +216,40 @@ jobs:
               TaskStatus.BUILDING,
               TaskStatus.IN_PROGRESS,
           }
+          EVALUATION_STATUSES = {TaskStatus.EVALUATING, TaskStatus.FINISHED}
 
           async def main() -> None:
               run_id = UUID(os.environ["RUN_ID"])
-              task_ids = Path(os.environ["RUNNER_TEMP"], "task-ids.txt").read_text().splitlines()
+              task_id = Path(os.environ["RUNNER_TEMP"], "task-ids.txt").read_text().strip()
               config = ValkyrieConfig.from_yaml()
-              service_headers = {}
-              if config.api_key and (api_key := config.api_key.get_secret_value()):
-                  service_headers["X-Descope-Api-Key"] = api_key
 
               async with ValkyrieClient(config) as client:
                   await client.runs.retry(
                       run_id,
-                      task_ids=task_ids,
-                      service_headers=service_headers,
+                      task_ids=[task_id],
+                      benchmark_url=os.environ["SERVICE_URL"],
                   )
-                  tasks = [await client.benchmarks.task(run_id, task_id) for task_id in task_ids]
-                  generation_tasks = [
-                      task.task_id for task in tasks if task.status in GENERATION_STATUSES
-                  ]
+                  task = await client.benchmarks.task(run_id, task_id)
 
-                  if generation_tasks:
-                      await client.runs.stop(run_id, force=True, task_ids=generation_tasks)
+                  if task.status in GENERATION_STATUSES:
+                      await client.runs.stop(run_id, force=True, task_ids=[task_id])
                       for _ in range(30):
-                          stopped_tasks = [
-                              await client.benchmarks.task(run_id, task_id)
-                              for task_id in generation_tasks
-                          ]
-                          if all(
-                              task.status in {TaskStatus.STOPPED, TaskStatus.ERROR}
-                              for task in stopped_tasks
-                          ):
-                              statuses = ", ".join(
-                                  f"{task.task_id}={task.status.value}" for task in stopped_tasks
-                              )
+                          stopped_task = await client.benchmarks.task(run_id, task_id)
+                          if stopped_task.status in {TaskStatus.STOPPED, TaskStatus.ERROR}:
                               sys.exit(
                                   "Retry fell back to generation and was force-stopped: "
-                                  f"{statuses}"
+                                  f"{task_id}={stopped_task.status.value}"
                               )
                           await asyncio.sleep(1)
                       sys.exit("Retry fell back to generation and force-stop did not finish")
 
-                  unexpected = [
-                      f"{task.task_id}={task.status.value}"
-                      for task in tasks
-                      if task.status != TaskStatus.EVALUATING
-                  ]
-                  if unexpected:
-                      sys.exit(f"Retry did not enter EVALUATING: {', '.join(unexpected)}")
+                  if task.status not in EVALUATION_STATUSES:
+                      sys.exit(f"Retry did not enter evaluation: {task_id}={task.status.value}")
 
-                  print(f"All {len(tasks)} tasks entered EVALUATING")
-                  async for update in client.runs.stream(run_id):
-                      print(f"{update.details.status.value}: {update.details.task_breakdown}")
+                  print(f"{task_id} entered {task.status.value} without generation")
+                  if task.status != TaskStatus.FINISHED:
+                      async for update in client.runs.stream(run_id):
+                          print(f"{update.details.status.value}: {update.details.task_breakdown}")
 
                   final_run = await client.runs.fetch(run_id)
                   if final_run.details.status != BenchmarkStatus.FINISHED:
@@ -175,35 +263,55 @@ jobs:
           set -euo pipefail
 
           valk run results "$RUN_ID" --path "$RUNNER_TEMP/after-results.json"
-          total_tasks="$(jq -r '.total_tasks' "$RUNNER_TEMP/before-run.json")"
-
+          task_id="$(cat "$RUNNER_TEMP/task-ids.txt")"
           jq -e \
-            --argjson total_tasks "$total_tasks" \
+            --arg task_id "$task_id" \
             --slurpfile before "$RUNNER_TEMP/before-results.json" \
             '
               . as $after
+              | $after.evaluation_results[$task_id] as $result
+              | $before[0].evaluation_results[$task_id] as $previous
               | .status == "FINISHED"
-              and ((.task_errors // {}) | length == 0)
-              and ((.evaluation_results // {}) | length == $total_tasks)
+              and (($after.task_errors // {})[$task_id] == null)
               and (.finished_at != $before[0].finished_at)
               and (.final_evaluation != null)
+              and ($result != null)
+              and ($previous.task_breakdown.agent_run_duration != null)
+              and (($result.attempts // 1) == (($previous.attempts // 1) + 1))
               and (
-                [
-                  $after.evaluation_results
-                  | to_entries[]
-                  | . as $result
-                  | $before[0].evaluation_results[$result.key] as $previous
-                  | ($previous.task_breakdown.agent_run_duration != null)
-                    and (
-                      ($result.value.attempts // 1)
-                      == (($previous.attempts // 1) + 1)
-                    )
-                    and (
-                      $result.value.task_breakdown.agent_run_duration
-                      == $previous.task_breakdown.agent_run_duration
-                    )
-                ]
-                | all
+                $result.task_breakdown.agent_run_duration
+                == $previous.task_breakdown.agent_run_duration
               )
-            ' \
-            "$RUNNER_TEMP/after-results.json"
+              and (
+                ($result.resolved == true)
+                or ($result.score == 1)
+                or ($result.reward == 1)
+                or ($result.rewards.score == 1)
+                or ($result.verifier_result.rewards.score == 1)
+              )
+            ' "$RUNNER_TEMP/after-results.json"
+
+      - name: Dump benchmark service logs
+        if: failure()
+        run: docker logs "${CONTAINER_NAME}" || true
+
+      - name: Stop ngrok tunnel
+        if: always()
+        run: |
+          if [ -n "${NGROK_PID:-}" ]; then
+            kill "${NGROK_PID}" || true
+          fi
+
+      - name: Stop timeout proxy
+        if: always()
+        run: |
+          if [ -n "${PROXY_PID:-}" ]; then
+            kill "${PROXY_PID}" || true
+          fi
+
+      - name: Stop benchmark service
+        if: always()
+        run: |
+          if [ -n "${CONTAINER_NAME:-}" ]; then
+            docker rm -f "${CONTAINER_NAME}" || true
+          fi

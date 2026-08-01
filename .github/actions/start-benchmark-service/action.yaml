@@ -1,0 +1,611 @@
+name: Start benchmark service
+description: Build the current checkout and expose it to the Valkyrie tracker.
+
+inputs:
+  benchmark-name:
+    description: Benchmark name, derived from the caller repository when empty.
+    required: false
+    default: ""
+  docker-build-ssh:
+    description: Enable Docker BuildKit SSH forwarding.
+    required: false
+    default: "false"
+  service-auth-required:
+    description: Require Descope authentication on the local service.
+    required: false
+    default: "false"
+  smoke-descope-tenant:
+    description: Descope tenant allowed to call the local service.
+    required: false
+    default: valkyrie-ci
+  smoke-dataset:
+    description: Dataset allowed when local service authentication is enabled.
+    required: false
+    default: ""
+  smoke-agent-timeout-seconds:
+    description: Agent timeout applied by the local proxy.
+    required: false
+    default: "180"
+  benchmark-service-env:
+    description: Secret benchmark service environment lines.
+    required: false
+    default: ""
+  benchmark-service-env-input:
+    description: Non-secret benchmark service environment lines.
+    required: false
+    default: ""
+  benchmark-service-aws-secret-refs:
+    description: AWS secret references used to populate service environment values.
+    required: false
+    default: ""
+  gh-pat:
+    description: GitHub token exposed to Docker BuildKit as a build secret.
+    required: false
+    default: ""
+  ngrok-authtoken:
+    description: Token used to start the ngrok tunnel.
+    required: true
+  ngrok-url:
+    description: Reserved ngrok URL requested for the tunnel.
+    required: false
+    default: ""
+  ngrok-public-url:
+    description: Public URL used when it differs from the ngrok API result.
+    required: false
+    default: ""
+
+outputs:
+  service-url:
+    description: Public URL for the local benchmark service.
+    value: ${{ steps.expose.outputs.service-url }}
+  benchmark-name:
+    description: Resolved benchmark name.
+    value: ${{ steps.resolve.outputs.benchmark-name }}
+  container-name:
+    description: Docker container name.
+    value: ${{ steps.resolve.outputs.container-name }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve benchmark service names
+      id: resolve
+      shell: bash
+      env:
+        BENCHMARK_NAME_INPUT: ${{ inputs.benchmark-name }}
+        NGROK_AUTHTOKEN: ${{ inputs.ngrok-authtoken }}
+      run: |
+        set -euo pipefail
+
+        if [ -z "${NGROK_AUTHTOKEN}" ]; then
+          echo "::error::ngrok-authtoken is required"
+          exit 1
+        fi
+
+        python3 - <<'PY'
+        import os
+        import re
+        import sys
+
+        def derive_benchmark_name(repository: str) -> str:
+            repo_name = repository.rsplit("/", 1)[-1]
+            if repo_name.endswith("-benchmark-service"):
+                return repo_name[: -len("-benchmark-service")]
+            if repo_name.endswith("BenchmarkService"):
+                repo_name = repo_name[: -len("BenchmarkService")]
+            return re.sub(r"[^a-z0-9-]+", "-", repo_name.lower()).strip("-")
+
+        benchmark_name = os.environ["BENCHMARK_NAME_INPUT"].strip()
+        if not benchmark_name:
+            benchmark_name = derive_benchmark_name(os.environ["GITHUB_REPOSITORY"])
+        if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", benchmark_name):
+            sys.exit(f"Invalid benchmark name: {benchmark_name!r}")
+
+        container_name = f"{benchmark_name}-benchmark-service"
+        with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+            print(f"BENCHMARK_NAME={benchmark_name}", file=env_file)
+            print(f"CONTAINER_NAME={container_name}", file=env_file)
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output_file:
+            print(f"benchmark-name={benchmark_name}", file=output_file)
+            print(f"container-name={container_name}", file=output_file)
+        PY
+
+    - name: Build and run benchmark service
+      shell: bash
+      env:
+        BENCHMARK_SERVICE_AWS_SECRET_REFS: ${{ inputs.benchmark-service-aws-secret-refs }}
+        BENCHMARK_SERVICE_ENV: ${{ inputs.benchmark-service-env }}
+        BENCHMARK_SERVICE_ENV_INPUT: ${{ inputs.benchmark-service-env-input }}
+        DOCKER_BUILD_SSH: ${{ inputs.docker-build-ssh }}
+        GH_PAT: ${{ inputs.gh-pat }}
+        SERVICE_AUTH_REQUIRED: ${{ inputs.service-auth-required }}
+        SMOKE_DATASET: ${{ inputs.smoke-dataset }}
+        SMOKE_DESCOPE_TENANT: ${{ inputs.smoke-descope-tenant }}
+      run: |
+        set -euo pipefail
+
+        docker_build_args=()
+        if [ "${DOCKER_BUILD_SSH}" = "true" ]; then
+          docker_build_args+=(--ssh default)
+        fi
+        if [ -n "${GH_PAT:-}" ]; then
+          docker_build_args+=(--secret id=gh_token,env=GH_PAT)
+        fi
+
+        docker_env_args=()
+        benchmark_env_file="${RUNNER_TEMP}/benchmark-service.env"
+        umask 077
+        : > "${benchmark_env_file}"
+
+        if [ -n "${BENCHMARK_SERVICE_AWS_SECRET_REFS:-}" ]; then
+          python3 - "${benchmark_env_file}" <<'PY'
+        import os
+        import re
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        env_path = Path(sys.argv[1])
+        key_pattern = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+        for line_number, line in enumerate(os.environ["BENCHMARK_SERVICE_AWS_SECRET_REFS"].splitlines(), start=1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            key, separator, ref = stripped.partition("=")
+            if not separator or not key_pattern.fullmatch(key):
+                sys.exit(
+                    f"Invalid BENCHMARK_SERVICE_AWS_SECRET_REFS line {line_number}: "
+                    "expected KEY=secret-id or KEY=secret-id#json-field"
+                )
+
+            secret_id = ref.strip()
+            if not secret_id:
+                sys.exit(
+                    f"Invalid BENCHMARK_SERVICE_AWS_SECRET_REFS line {line_number}: "
+                    "expected KEY=secret-id or KEY=secret-id#json-field"
+                )
+
+            secret_field = None
+            if "#" in secret_id:
+                secret_id, secret_field = secret_id.rsplit("#", 1)
+                if not secret_id or not secret_field:
+                    sys.exit(
+                        f"Invalid BENCHMARK_SERVICE_AWS_SECRET_REFS line {line_number}: "
+                        "expected KEY=secret-id#json-field"
+                    )
+
+            secret_string = subprocess.check_output(
+                [
+                    "aws",
+                    "secretsmanager",
+                    "get-secret-value",
+                    "--secret-id",
+                    secret_id,
+                    "--query",
+                    "SecretString",
+                    "--output",
+                    "text",
+                ],
+                text=True,
+            ).rstrip("\n")
+
+            value = secret_string
+            if secret_field:
+                import json
+
+                try:
+                    secret_payload = json.loads(secret_string)
+                except json.JSONDecodeError as error:
+                    sys.exit(f"AWS secret {secret_id} is not JSON, cannot read field {secret_field}: {error}")
+                if secret_field not in secret_payload:
+                    sys.exit(f"AWS secret {secret_id} does not contain field {secret_field}")
+                value = str(secret_payload[secret_field])
+
+            if "\n" in value:
+                sys.exit(f"AWS secret value for {key} contains a newline, which Docker env files do not support")
+
+            print(f"::add-mask::{value}")
+            with env_path.open("a", encoding="utf-8") as env_file:
+                print(f"{key}={value}", file=env_file)
+        PY
+        fi
+
+        if [ -n "${BENCHMARK_SERVICE_ENV:-}" ]; then
+          printf '%s\n' "${BENCHMARK_SERVICE_ENV}" >> "${benchmark_env_file}"
+        fi
+
+        if [ -n "${BENCHMARK_SERVICE_ENV_INPUT:-}" ]; then
+          printf '%s\n' "${BENCHMARK_SERVICE_ENV_INPUT}" >> "${benchmark_env_file}"
+        fi
+
+        python3 - "${benchmark_env_file}" <<'PY'
+        import json
+        import os
+        from pathlib import Path
+        import sys
+
+        env_path = Path(sys.argv[1])
+        if os.environ["SERVICE_AUTH_REQUIRED"].lower() == "true":
+            smoke_descope_tenant = os.environ["SMOKE_DESCOPE_TENANT"].strip()
+            if not smoke_descope_tenant:
+                raise SystemExit("smoke-descope-tenant is required when service-auth-required is true")
+            allowlist = {
+                "tenants": {
+                    smoke_descope_tenant: {
+                        "datasets": [os.environ["SMOKE_DATASET"]],
+                    }
+                }
+            }
+            lines = []
+            for line in env_path.read_text().splitlines():
+                key, separator, _ = line.partition("=")
+                if separator and key == "DESCOPE_TENANT_ALLOWLIST_JSON":
+                    continue
+                lines.append(line)
+            env_path.write_text("\n".join(lines) + "\n")
+            with env_path.open("a", encoding="utf-8") as env_file:
+                allowlist_json = json.dumps(allowlist, separators=(",", ":"))
+                print(f"DESCOPE_TENANT_ALLOWLIST_JSON={allowlist_json}", file=env_file)
+        PY
+
+        if [ "${SERVICE_AUTH_REQUIRED}" = "true" ]; then
+          descope_project_id="$(
+            aws secretsmanager get-secret-value \
+              --secret-id "${DESCOPE_PROJECT_ID_SECRET_ID}" \
+              --query SecretString \
+              --output text
+          )"
+          python3 - "${benchmark_env_file}" <<'PY'
+        import sys
+        from pathlib import Path
+
+        env_path = Path(sys.argv[1])
+        lines = []
+        for line in env_path.read_text().splitlines():
+            key, separator, _ = line.partition("=")
+            if separator and key == "DESCOPE_PROJECT_ID":
+                continue
+            lines.append(line)
+        env_path.write_text("\n".join(lines) + "\n")
+        PY
+          printf 'DESCOPE_PROJECT_ID=%s\n' "${descope_project_id}" >> "${benchmark_env_file}"
+        fi
+
+        valkyrie_python="$(head -n 1 "$(command -v valkyrie)")"
+        valkyrie_python="${valkyrie_python#\#!}"
+        "${valkyrie_python}" - "${benchmark_env_file}" <<'PY'
+        from pathlib import Path
+        import sys
+
+        from valkyrie.sdk import ValkyrieConfig
+
+        env_path = Path(sys.argv[1])
+        existing_keys = {
+            line.partition("=")[0]
+            for line in env_path.read_text().splitlines()
+            if line.strip() and not line.lstrip().startswith("#") and "=" in line
+        }
+        if "VALS_API_KEY" not in existing_keys:
+            config = ValkyrieConfig.from_yaml()
+            if config.api_key and (api_key := config.api_key.get_secret_value()):
+                if "\n" in api_key:
+                    raise SystemExit("Valkyrie api_key contains a newline, which Docker env files do not support")
+                print(f"::add-mask::{api_key}")
+                with env_path.open("a", encoding="utf-8") as env_file:
+                    print(f"VALS_API_KEY={api_key}", file=env_file)
+        PY
+
+        python3 - "${benchmark_env_file}" <<'PY'
+        import os
+        import sys
+        from pathlib import Path
+
+        env_path = Path(sys.argv[1])
+        lines = []
+        for line in env_path.read_text().splitlines():
+            key, separator, _ = line.partition("=")
+            if separator and key == "AUTH_REQUIRED":
+                continue
+            lines.append(line)
+        lines.append(f"AUTH_REQUIRED={os.environ['SERVICE_AUTH_REQUIRED'].lower()}")
+        env_path.write_text("\n".join(lines) + "\n")
+        PY
+
+        python3 - "${benchmark_env_file}" <<'PY'
+        import re
+        import sys
+        from pathlib import Path
+
+        env_path = Path(sys.argv[1])
+        key_pattern = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+        for line_number, line in enumerate(env_path.read_text().splitlines(), start=1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            key, separator, _ = line.partition("=")
+            if not separator or not key_pattern.fullmatch(key):
+                sys.exit(f"Invalid BENCHMARK_SERVICE_ENV line {line_number}: expected KEY=value")
+        PY
+        docker_env_args+=(--env-file "${benchmark_env_file}")
+
+        DOCKER_BUILDKIT=1 docker build "${docker_build_args[@]}" -t "${CONTAINER_NAME}:${GITHUB_SHA}" .
+
+        docker run -d --name "${CONTAINER_NAME}" \
+          "${docker_env_args[@]}" \
+          -e AWS_ACCESS_KEY_ID \
+          -e AWS_SECRET_ACCESS_KEY \
+          -e AWS_SESSION_TOKEN \
+          -e AWS_REGION="${AWS_REGION}" \
+          -e AWS_DEFAULT_REGION="${AWS_REGION}" \
+          -e AUTH_REQUIRED="${SERVICE_AUTH_REQUIRED}" \
+          -p "127.0.0.1:${INTERNAL_SERVICE_PORT}:${CONTAINER_PORT}" \
+          "${CONTAINER_NAME}:${GITHUB_SHA}"
+
+        for _ in {1..60}; do
+          curl -fsS "http://127.0.0.1:${INTERNAL_SERVICE_PORT}${HEALTH_PATH}" && exit 0
+          sleep 2
+        done
+
+        docker logs "${CONTAINER_NAME}"
+        exit 1
+
+    - name: Start smoke task timeout proxy
+      shell: bash
+      env:
+        SMOKE_AGENT_TIMEOUT_SECONDS: ${{ inputs.smoke-agent-timeout-seconds }}
+      run: |
+        set -euo pipefail
+
+        cat > "${RUNNER_TEMP}/benchmark-service-timeout-proxy.js" <<'JS'
+        const http = require("http");
+        const net = require("net");
+
+        const listenPort = Number(process.env.SERVICE_PORT);
+        const upstreamPort = Number(process.env.INTERNAL_SERVICE_PORT);
+        const timeoutSeconds = Number(process.env.SMOKE_AGENT_TIMEOUT_SECONDS);
+
+        function shouldPatch(requestUrl) {
+          return Number.isFinite(timeoutSeconds) && timeoutSeconds > 0 && requestUrl.startsWith("/retrieve-task/");
+        }
+
+        const server = http.createServer((clientRequest, clientResponse) => {
+          const upstreamRequest = http.request(
+            {
+              hostname: "127.0.0.1",
+              port: upstreamPort,
+              path: clientRequest.url,
+              method: clientRequest.method,
+              headers: clientRequest.headers,
+            },
+            (upstreamResponse) => {
+              if (!shouldPatch(clientRequest.url || "")) {
+                clientResponse.writeHead(upstreamResponse.statusCode || 502, upstreamResponse.headers);
+                upstreamResponse.pipe(clientResponse);
+                return;
+              }
+
+              const chunks = [];
+              upstreamResponse.on("data", (chunk) => chunks.push(chunk));
+              upstreamResponse.on("end", () => {
+                const body = Buffer.concat(chunks).toString("utf8");
+                try {
+                  const payload = JSON.parse(body);
+                  payload.agent_timeout = timeoutSeconds;
+                  const patchedBody = JSON.stringify(payload);
+                  const headers = { ...upstreamResponse.headers };
+                  delete headers["content-length"];
+                  headers["content-type"] = headers["content-type"] || "application/json";
+                  headers["content-length"] = Buffer.byteLength(patchedBody);
+                  clientResponse.writeHead(upstreamResponse.statusCode || 200, headers);
+                  clientResponse.end(patchedBody);
+                } catch {
+                  clientResponse.writeHead(upstreamResponse.statusCode || 502, upstreamResponse.headers);
+                  clientResponse.end(body);
+                }
+              });
+            },
+          );
+
+          upstreamRequest.on("error", (error) => {
+            clientResponse.writeHead(502, { "content-type": "text/plain" });
+            clientResponse.end(`benchmark-service proxy error: ${error.message}`);
+          });
+
+          clientRequest.pipe(upstreamRequest);
+        });
+
+        server.on("upgrade", (request, socket, head) => {
+          const upstreamSocket = net.connect(upstreamPort, "127.0.0.1", () => {
+            upstreamSocket.write(
+              `${request.method} ${request.url} HTTP/${request.httpVersion}\r\n` +
+                Object.entries(request.headers)
+                  .map(([key, value]) => `${key}: ${value}`)
+                  .join("\r\n") +
+                "\r\n\r\n",
+            );
+            if (head.length) {
+              upstreamSocket.write(head);
+            }
+            socket.pipe(upstreamSocket);
+            upstreamSocket.pipe(socket);
+          });
+
+          upstreamSocket.on("error", () => socket.destroy());
+        });
+
+        server.listen(listenPort, "127.0.0.1", () => {
+          console.log(`Smoke timeout proxy listening on ${listenPort}, forwarding to ${upstreamPort}, agent_timeout=${timeoutSeconds}`);
+        });
+        JS
+
+        node "${RUNNER_TEMP}/benchmark-service-timeout-proxy.js" > /tmp/benchmark-service-timeout-proxy.log 2>&1 &
+        echo "PROXY_PID=$!" >> "$GITHUB_ENV"
+
+        for _ in {1..30}; do
+          curl -fsS "http://127.0.0.1:${SERVICE_PORT}${HEALTH_PATH}" && exit 0
+          sleep 1
+        done
+
+        cat /tmp/benchmark-service-timeout-proxy.log
+        exit 1
+
+    - name: Install ngrok
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        curl -sSLo /tmp/ngrok.tgz https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
+        sudo tar -xzf /tmp/ngrok.tgz -C /usr/local/bin
+        ngrok version
+
+    - name: Expose benchmark service with ngrok
+      id: expose
+      shell: bash
+      env:
+        NGROK_AUTHTOKEN: ${{ inputs.ngrok-authtoken }}
+        NGROK_PUBLIC_URL: ${{ inputs.ngrok-public-url }}
+        NGROK_URL: ${{ inputs.ngrok-url }}
+      run: |
+        set -euo pipefail
+
+        ngrok config add-authtoken "${NGROK_AUTHTOKEN}"
+
+        ngrok_args=(http "http://127.0.0.1:${SERVICE_PORT}" --log stdout)
+        if [ -n "${NGROK_URL:-}" ]; then
+          ngrok_args+=(--url "${NGROK_URL}")
+        else
+          generated_ngrok_domain="$(
+          python3 - <<'PY'
+        import os
+        import re
+
+        benchmark_name = re.sub(r"[^a-z0-9-]+", "-", os.environ["BENCHMARK_NAME"].lower()).strip("-")
+        benchmark_name = benchmark_name[:24].strip("-") or "benchmark"
+        print(f"ci-{benchmark_name}-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}.ngrok.app")
+        PY
+        )"
+          ngrok_args+=(--url "https://${generated_ngrok_domain}")
+        fi
+
+        ngrok "${ngrok_args[@]}" > /tmp/ngrok.log 2>&1 &
+        echo "NGROK_PID=$!" >> "$GITHUB_ENV"
+
+        for _ in {1..60}; do
+          service_url="$(
+          python3 - <<'PY'
+        import json
+        import urllib.request
+
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:4040/api/tunnels", timeout=2) as response:
+                payload = json.load(response)
+        except Exception:
+            raise SystemExit(1)
+
+        for tunnel in payload.get("tunnels", []):
+            public_url = tunnel.get("public_url", "")
+            if public_url.startswith("https://"):
+                print(public_url)
+                break
+        else:
+            raise SystemExit(1)
+        PY
+        )" || true
+
+          public_service_url="${NGROK_PUBLIC_URL:-${service_url}}"
+          if [ -n "${public_service_url}" ] &&
+            curl -fsS --connect-timeout 10 --max-time 20 "${public_service_url}${HEALTH_PATH}"; then
+            echo "SERVICE_URL=${public_service_url}" >> "$GITHUB_ENV"
+            echo "service-url=${public_service_url}" >> "$GITHUB_OUTPUT"
+            echo "ngrok URL: ${public_service_url}"
+            exit 0
+          fi
+          sleep 5
+        done
+
+        cat /tmp/ngrok.log
+        if [ -n "${service_url:-}" ]; then
+          curl -v --connect-timeout 10 --max-time 20 "${service_url}${HEALTH_PATH}"
+        fi
+        exit 1
+
+    - name: Wait for tracker to reach benchmark service
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        valkyrie_python="$(head -n 1 "$(command -v valkyrie)")"
+        valkyrie_python="${valkyrie_python#\#!}"
+
+        "${valkyrie_python}" - <<'PY'
+        import asyncio
+        import os
+        import sys
+        import time
+
+        from valkyrie.sdk import BenchmarkServiceEntry, BenchmarkServicesResponse, ValkyrieClient, ValkyrieConfig
+        from valkyrie.sdk.models.services import BenchmarkServicesRequest
+
+        async def main() -> None:
+            benchmark_name = os.environ["BENCHMARK_NAME"]
+            service_url = os.environ["SERVICE_URL"]
+            deadline = time.monotonic() + 300
+            config = ValkyrieConfig.from_yaml()
+            config.custom_benchmark_services[benchmark_name] = service_url
+            entry = BenchmarkServiceEntry(name=benchmark_name, url=service_url)
+            request = BenchmarkServicesRequest(services=[entry])
+
+            async with ValkyrieClient(config) as client:
+                while True:
+                    response = await client.request_model(
+                        "POST",
+                        "/benchmark-services",
+                        BenchmarkServicesResponse,
+                        json=request.model_dump(mode="json"),
+                    )
+                    health = response.services[0]
+                    if health.healthy:
+                        print(f"Tracker reached {benchmark_name} at {service_url} in {health.latency_ms} ms")
+                        return
+
+                    print(f"Tracker cannot reach {benchmark_name} at {service_url}: {health.error}")
+                    if time.monotonic() >= deadline:
+                        sys.exit("Tracker could not reach benchmark service before timeout")
+                    await asyncio.sleep(10)
+
+        asyncio.run(main())
+        PY
+
+    - name: Verify public websocket reachability
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        valkyrie_python="$(head -n 1 "$(command -v valkyrie)")"
+        valkyrie_python="${valkyrie_python#\#!}"
+
+        "${valkyrie_python}" - <<'PY'
+        import asyncio
+        import os
+
+        import websockets
+        from valkyrie.sdk import ValkyrieConfig
+
+        async def main() -> None:
+            service_url = os.environ["SERVICE_URL"]
+            websocket_url = service_url.replace("https://", "wss://").replace("http://", "ws://")
+            config = ValkyrieConfig.from_yaml()
+            headers = {}
+            if config.api_key and (api_key := config.api_key.get_secret_value()):
+                headers["X-Descope-Api-Key"] = api_key
+            async with websockets.connect(
+                f"{websocket_url}/ws/setup-task",
+                additional_headers=headers,
+                open_timeout=30,
+                ping_timeout=None,
+            ):
+                print(f"Websocket reachable at {websocket_url}/ws/setup-task")
+
+        asyncio.run(main())
+        PY
