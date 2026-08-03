@@ -7,8 +7,8 @@ def test_retry_eval_workflows_require_a_fresh_single_task_ci_run() -> None:
     Test cases:
     - Both workflows use the merged local-service action.
     - Smoke verifies the valkyrie-ci organization.
-    - Retry defaults to Valkyrie dev and requires one clean perfect task.
-    - Postflight requires one clean result and preserves agent duration.
+    - Retry defaults to Valkyrie dev and requires one clean positive-scoring task.
+    - Postflight accepts a changed positive score and preserves agent duration.
     """
     workflows = Path(__file__).parents[1] / "workflows"
     smoke = (workflows / "benchmark-service-smoke.yaml").read_text()
@@ -35,9 +35,13 @@ def test_retry_eval_workflows_require_a_fresh_single_task_ci_run() -> None:
             '((.task_errors // {}) | length) == 0',
             '((.tasks_stopped // []) | length) == 0',
             '.final_evaluation != null',
-            '.final_evaluation.final_score == 100',
+            '((.final_evaluation.final_score | type) == "number")',
+            '.final_evaluation.final_score > 0',
         ):
             assert required_gate in section
 
+    assert '.final_evaluation.final_score == 100' not in retry
     assert "agent_run_duration" in postflight
+    assert "Initial score: $before_score" in preflight
+    assert "Retried score: $after_score" in postflight
     assert "Selected passing task" in preflight

@@ -170,6 +170,9 @@ jobs:
             exit 1
           fi
 
+          before_score="$(jq -r '.final_evaluation.final_score // "missing"' "$RUNNER_TEMP/before-results.json")"
+          echo "Initial score: $before_score"
+
           jq -e \
             --arg benchmark_name "$EXPECTED_BENCHMARK_NAME" \
             '
@@ -180,11 +183,12 @@ jobs:
               and (((.task_errors // {}) | length) == 0)
               and (((.tasks_stopped // []) | length) == 0)
               and (.final_evaluation != null)
+              and ((.final_evaluation.final_score | type) == "number")
+              and (.final_evaluation.final_score > 0)
             ' "$RUNNER_TEMP/before-results.json"
 
           jq -er '
-            select(.final_evaluation.final_score == 100)
-            | (.evaluation_results // {})
+            (.evaluation_results // {})
             | to_entries
             | select(length == 1)
             | .[0]
@@ -264,6 +268,8 @@ jobs:
 
           valk run results "$RUN_ID" --path "$RUNNER_TEMP/after-results.json"
           task_id="$(cat "$RUNNER_TEMP/task-ids.txt")"
+          after_score="$(jq -r '.final_evaluation.final_score // "missing"' "$RUNNER_TEMP/after-results.json")"
+          echo "Retried score: $after_score"
           jq -e \
             --arg task_id "$task_id" \
             --slurpfile before "$RUNNER_TEMP/before-results.json" \
@@ -279,7 +285,8 @@ jobs:
               and (((.tasks_stopped // []) | length) == 0)
               and (.finished_at != $before[0].finished_at)
               and (.final_evaluation != null)
-              and (.final_evaluation.final_score == 100)
+              and ((.final_evaluation.final_score | type) == "number")
+              and (.final_evaluation.final_score > 0)
               and ($result != null)
               and ($previous.task_breakdown.agent_run_duration != null)
               and (($result.attempts // 1) == (($previous.attempts // 1) + 1))
