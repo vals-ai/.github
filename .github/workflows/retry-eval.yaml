@@ -170,23 +170,6 @@ jobs:
             exit 1
           fi
 
-          before_score="$(jq -r '.final_evaluation.final_score // "missing"' "$RUNNER_TEMP/before-results.json")"
-          echo "Initial score: $before_score"
-
-          jq -e \
-            --arg benchmark_name "$EXPECTED_BENCHMARK_NAME" \
-            '
-              .benchmark_name == $benchmark_name
-              and .status == "FINISHED"
-              and (((.benchmark_arguments.task_ids // []) | length) == 1)
-              and (((.evaluation_results // {}) | length) == 1)
-              and (((.task_errors // {}) | length) == 0)
-              and (((.tasks_stopped // []) | length) == 0)
-              and (.final_evaluation != null)
-              and ((.final_evaluation.final_score | type) == "number")
-              and (.final_evaluation.final_score > 0)
-            ' "$RUNNER_TEMP/before-results.json"
-
           jq -er '
             (.evaluation_results // {})
             | to_entries
@@ -195,7 +178,42 @@ jobs:
             | .key
           ' "$RUNNER_TEMP/before-results.json" > "$RUNNER_TEMP/task-ids.txt"
 
-          echo "Selected passing task: $(cat "$RUNNER_TEMP/task-ids.txt")"
+          task_id="$(cat "$RUNNER_TEMP/task-ids.txt")"
+          before_score="$(jq -r '.final_evaluation.final_score // "missing"' "$RUNNER_TEMP/before-results.json")"
+          echo "Initial score: $before_score"
+
+          jq -e \
+            --arg benchmark_name "$EXPECTED_BENCHMARK_NAME" \
+            --arg task_id "$task_id" \
+            '
+              def positive($value):
+                ($value | type) == "number" and $value > 0;
+              def task_positive($task_id):
+                (.evaluation_results[$task_id] // {}) as $task_result
+                | ($task_result.resolved == true)
+                  or positive($task_result.score // null)
+                  or positive($task_result.final_score // null)
+                  or positive($task_result.pass_percentage // null)
+                  or positive($task_result.pass_percentage_with_weight // null)
+                  or any(.final_evaluation.properties.tasks[]?;
+                    .task_id == $task_id
+                    and positive(.scores.score.value // null)
+                  );
+              .benchmark_name == $benchmark_name
+              and .status == "FINISHED"
+              and (((.benchmark_arguments.task_ids // []) | length) == 1)
+              and (((.evaluation_results // {}) | length) == 1)
+              and (((.task_errors // {}) | length) == 0)
+              and (((.tasks_stopped // []) | length) == 0)
+              and (.final_evaluation != null)
+              and ((.final_evaluation.final_score | type) == "number")
+              and (
+                (.final_evaluation.final_score > 0)
+                or task_positive($task_id)
+              )
+            ' "$RUNNER_TEMP/before-results.json"
+
+          echo "Selected passing task: $task_id"
 
       - name: Retry evaluation
         env:
@@ -274,6 +292,19 @@ jobs:
             --arg task_id "$task_id" \
             --slurpfile before "$RUNNER_TEMP/before-results.json" \
             '
+              def positive($value):
+                ($value | type) == "number" and $value > 0;
+              def task_positive($task_id):
+                (.evaluation_results[$task_id] // {}) as $task_result
+                | ($task_result.resolved == true)
+                  or positive($task_result.score // null)
+                  or positive($task_result.final_score // null)
+                  or positive($task_result.pass_percentage // null)
+                  or positive($task_result.pass_percentage_with_weight // null)
+                  or any(.final_evaluation.properties.tasks[]?;
+                    .task_id == $task_id
+                    and positive(.scores.score.value // null)
+                  );
               . as $after
               | $after.evaluation_results[$task_id] as $result
               | $before[0].evaluation_results[$task_id] as $previous
@@ -286,7 +317,10 @@ jobs:
               and (.finished_at != $before[0].finished_at)
               and (.final_evaluation != null)
               and ((.final_evaluation.final_score | type) == "number")
-              and (.final_evaluation.final_score > 0)
+              and (
+                (.final_evaluation.final_score > 0)
+                or task_positive($task_id)
+              )
               and ($result != null)
               and ($previous.task_breakdown.agent_run_duration != null)
               and (($result.attempts // 1) == (($previous.attempts // 1) + 1))

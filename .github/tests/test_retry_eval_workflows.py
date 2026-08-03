@@ -45,6 +45,11 @@ def test_retry_eval_workflows_require_a_fresh_single_task_ci_run() -> None:
         ):
             assert required_gate in section
 
+    assert "def task_positive($task_id):" in preflight
+    assert "or task_positive($task_id)" in preflight
+    assert "def task_positive($task_id):" in postflight
+    assert "or task_positive($task_id)" in postflight
+
     assert '.final_evaluation.final_score == 100' not in retry
     assert "agent_run_duration" in postflight
     assert "Initial score: $before_score" in preflight
