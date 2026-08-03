@@ -39,7 +39,7 @@ on:
       valkyrie_ref:
         description: "Valkyrie git ref installed by the workflow."
         required: false
-        default: prod
+        default: dev
         type: string
     secrets:
       VALKYRIE_AWS_ROLE_ARN:
@@ -141,7 +141,7 @@ jobs:
 
       - name: Start local benchmark service
         id: local-service
-        uses: vals-ai/.github/.github/actions/start-benchmark-service@jf/retry-eval-passed-task
+        uses: vals-ai/.github/.github/actions/start-benchmark-service@main
         with:
           benchmark-name: ${{ inputs.benchmark_name }}
           docker-build-ssh: ${{ inputs.docker_build_ssh }}
@@ -170,25 +170,25 @@ jobs:
             exit 1
           fi
 
-          jq -e '
-            .status == "FINISHED"
-            and ((.evaluation_results // {}) | length > 0)
-          ' "$RUNNER_TEMP/before-results.json"
+          jq -e \
+            --arg benchmark_name "$EXPECTED_BENCHMARK_NAME" \
+            '
+              .benchmark_name == $benchmark_name
+              and .status == "FINISHED"
+              and (((.benchmark_arguments.task_ids // []) | length) == 1)
+              and (((.evaluation_results // {}) | length) == 1)
+              and (((.task_errors // {}) | length) == 0)
+              and (((.tasks_stopped // []) | length) == 0)
+              and (.final_evaluation != null)
+            ' "$RUNNER_TEMP/before-results.json"
 
           jq -er '
-            (.evaluation_results // {})
+            select(.final_evaluation.final_score == 100)
+            | (.evaluation_results // {})
             | to_entries
-            | map(
-                select(
-                  (.value.resolved == true)
-                  or (.value.score == 1)
-                  or (.value.reward == 1)
-                  or (.value.rewards.score == 1)
-                  or (.value.verifier_result.rewards.score == 1)
-                )
-              )
-            | first
-            | .key // empty
+            | select(length == 1)
+            | .[0]
+            | .key
           ' "$RUNNER_TEMP/before-results.json" > "$RUNNER_TEMP/task-ids.txt"
 
           echo "Selected passing task: $(cat "$RUNNER_TEMP/task-ids.txt")"
@@ -272,22 +272,20 @@ jobs:
               | $after.evaluation_results[$task_id] as $result
               | $before[0].evaluation_results[$task_id] as $previous
               | .status == "FINISHED"
-              and (($after.task_errors // {})[$task_id] == null)
+              and ($after.benchmark_name == $before[0].benchmark_name)
+              and (((.benchmark_arguments.task_ids // []) | length) == 1)
+              and (((.evaluation_results // {}) | length) == 1)
+              and (((.task_errors // {}) | length) == 0)
+              and (((.tasks_stopped // []) | length) == 0)
               and (.finished_at != $before[0].finished_at)
               and (.final_evaluation != null)
+              and (.final_evaluation.final_score == 100)
               and ($result != null)
               and ($previous.task_breakdown.agent_run_duration != null)
               and (($result.attempts // 1) == (($previous.attempts // 1) + 1))
               and (
                 $result.task_breakdown.agent_run_duration
                 == $previous.task_breakdown.agent_run_duration
-              )
-              and (
-                ($result.resolved == true)
-                or ($result.score == 1)
-                or ($result.reward == 1)
-                or ($result.rewards.score == 1)
-                or ($result.verifier_result.rewards.score == 1)
               )
             ' "$RUNNER_TEMP/after-results.json"
 

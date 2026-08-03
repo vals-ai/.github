@@ -85,6 +85,7 @@ concurrency:
 
 env:
   AWS_REGION: us-east-1
+  EXPECTED_ORG_NAME: valkyrie-ci
   SERVICE_PORT: "8001"
   INTERNAL_SERVICE_PORT: "18001"
   CONTAINER_PORT: "8001"
@@ -183,6 +184,42 @@ jobs:
             printf 'AWS_DEFAULT_REGION: "%s"\n' "${AWS_REGION}"
           } >> ~/.config/valkyrie/valkyrie.yaml
 
+      - name: Verify Valkyrie organization
+        run: |
+          set -euo pipefail
+
+          valkyrie_python="$(head -n 1 "$(command -v valkyrie)")"
+          valkyrie_python="${valkyrie_python#\#!}"
+
+          "$valkyrie_python" - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          from valkyrie.sdk import ValkyrieConfig
+
+          config = ValkyrieConfig.from_yaml()
+          if config.api_key is None or not (api_key := config.api_key.get_secret_value()):
+              raise SystemExit("Valkyrie CI config is missing api_key")
+
+          request = urllib.request.Request(
+              f"{os.environ['TRACKER_SERVICE_URL']}/init",
+              headers={"X-Api-Key": api_key},
+              method="POST",
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              payload = json.load(response)
+
+          if payload.get("org_name") != os.environ["EXPECTED_ORG_NAME"]:
+              raise SystemExit(
+                  f"Expected Valkyrie organization {os.environ['EXPECTED_ORG_NAME']}; "
+                  f"got {payload.get('org_name')}"
+              )
+          if payload.get("created"):
+              raise SystemExit("valkyrie-ci was missing and had to be initialized")
+          print(f"Valkyrie organization: {payload['org_name']}")
+          PY
+
       - name: Configure Docker build SSH
         if: ${{ inputs.docker_build_ssh }}
         uses: webfactory/ssh-agent@v0.9.1
@@ -195,7 +232,7 @@ jobs:
 
       - name: Start local benchmark service
         id: local-service
-        uses: vals-ai/.github/.github/actions/start-benchmark-service@jf/retry-eval-passed-task
+        uses: vals-ai/.github/.github/actions/start-benchmark-service@main
         with:
           benchmark-name: ${{ inputs.benchmark_name }}
           docker-build-ssh: ${{ inputs.docker_build_ssh }}
