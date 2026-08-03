@@ -7,6 +7,7 @@ def test_retry_eval_workflows_require_a_fresh_single_task_ci_run() -> None:
     Test cases:
     - Both workflows use the merged local-service action.
     - Smoke verifies the valkyrie-ci organization.
+    - Smoke keeps a 45-minute default wait that callers can extend.
     - Retry defaults to Valkyrie dev and requires one clean positive-scoring task.
     - Postflight accepts a changed positive score and preserves agent duration.
     """
@@ -19,6 +20,10 @@ def test_retry_eval_workflows_require_a_fresh_single_task_ci_run() -> None:
     assert merged_action in retry
     assert "EXPECTED_ORG_NAME: valkyrie-ci" in smoke
     assert 'payload.get("org_name") != os.environ["EXPECTED_ORG_NAME"]' in smoke
+    assert "smoke_wait_timeout_minutes:" in smoke
+    assert "SMOKE_WAIT_TIMEOUT_MINUTES: ${{ inputs.smoke_wait_timeout_minutes }}" in smoke
+    assert 'wait_timeout_minutes = int(os.environ["SMOKE_WAIT_TIMEOUT_MINUTES"])' in smoke
+    assert "wait_attempts = wait_timeout_minutes * 2" in smoke
     assert "default: dev" in retry
 
     preflight = retry.split("- name: Validate completed run", maxsplit=1)[1].split(
