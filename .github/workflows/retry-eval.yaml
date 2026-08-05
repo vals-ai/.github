@@ -256,12 +256,24 @@ jobs:
                       task_ids=[task_id],
                       benchmark_url=os.environ["SERVICE_URL"],
                   )
-                  task = await client.benchmarks.task(run_id, task_id)
+                  task_page = await client.benchmarks.tasks(run_id)
+                  task = next(
+                      (candidate for candidate in task_page.tasks if candidate.task_id == task_id),
+                      None,
+                  )
+                  if task is None:
+                      sys.exit(f"Retry task was not returned by the tracker: {task_id}")
 
                   if task.status in GENERATION_STATUSES:
                       await client.runs.stop(run_id, force=True, task_ids=[task_id])
                       for _ in range(30):
-                          stopped_task = await client.benchmarks.task(run_id, task_id)
+                          task_page = await client.benchmarks.tasks(run_id)
+                          stopped_task = next(
+                              (candidate for candidate in task_page.tasks if candidate.task_id == task_id),
+                              None,
+                          )
+                          if stopped_task is None:
+                              sys.exit(f"Stopped retry task was not returned by the tracker: {task_id}")
                           if stopped_task.status in {TaskStatus.STOPPED, TaskStatus.ERROR}:
                               sys.exit(
                                   "Retry fell back to generation and was force-stopped: "

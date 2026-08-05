@@ -56,6 +56,7 @@ def test_retry_eval_workflows_require_a_fresh_single_task_ci_run() -> None:
 
     assert '.final_evaluation.final_score == 100' not in retry
     assert "agent_run_duration" in postflight
+    assert "client.benchmarks.tasks(run_id)" in retry
     assert "Initial score: $before_score" in preflight
     assert "Retried score: $after_score" in postflight
     assert "Selected passing task" in preflight
