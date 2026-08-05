@@ -190,11 +190,16 @@ jobs:
                 ($value | type) == "number" and $value > 0;
               def task_positive($task_id):
                 (.evaluation_results[$task_id] // {}) as $task_result
+                | ($task_result.result // {}) as $nested_result
                 | ($task_result.resolved == true)
                   or positive($task_result.score // null)
                   or positive($task_result.final_score // null)
                   or positive($task_result.pass_percentage // null)
                   or positive($task_result.pass_percentage_with_weight // null)
+                  or positive($nested_result.score // null)
+                  or positive($nested_result.final_score // null)
+                  or positive($nested_result.pass_percentage // null)
+                  or positive($nested_result.weighted_pass_percentage // null)
                   or any(.final_evaluation.properties.tasks[]?;
                     .task_id == $task_id
                     and positive(.scores.score.value // null)
@@ -296,11 +301,16 @@ jobs:
                 ($value | type) == "number" and $value > 0;
               def task_positive($task_id):
                 (.evaluation_results[$task_id] // {}) as $task_result
+                | ($task_result.result // {}) as $nested_result
                 | ($task_result.resolved == true)
                   or positive($task_result.score // null)
                   or positive($task_result.final_score // null)
                   or positive($task_result.pass_percentage // null)
                   or positive($task_result.pass_percentage_with_weight // null)
+                  or positive($nested_result.score // null)
+                  or positive($nested_result.final_score // null)
+                  or positive($nested_result.pass_percentage // null)
+                  or positive($nested_result.weighted_pass_percentage // null)
                   or any(.final_evaluation.properties.tasks[]?;
                     .task_id == $task_id
                     and positive(.scores.score.value // null)
