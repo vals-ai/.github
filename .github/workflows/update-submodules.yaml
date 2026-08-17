@@ -25,6 +25,11 @@ on:
         description: 'Branch name for the submodule update PR'
         required: true
         type: string
+      runner:
+        description: 'Runner label for the update job'
+        required: false
+        default: ubuntu-latest
+        type: string
     secrets:
       GH_PAT:
         required: true
@@ -41,7 +46,7 @@ concurrency:
 
 jobs:
   update:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     permissions:
       contents: read
     steps:
