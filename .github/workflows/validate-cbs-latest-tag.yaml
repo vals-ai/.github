@@ -61,9 +61,9 @@ jobs:
           uv pip install --python .cbs-check-venv/bin/python --no-deps "${cbs_requirement}"
 
           latest_tag="$(
-            git ls-remote --tags --sort=-version:refname \
+            git ls-remote --refs --tags --sort=-version:refname \
               "${repository_url}" "refs/tags/v*" \
-              | awk '!/\^{}$/ && !tag { tag = $2 } END { sub("refs/tags/", "", tag); print tag }'
+              | awk '!tag { tag = $2 } END { sub("refs/tags/", "", tag); print tag }'
           )"
 
           if [ -z "${latest_tag}" ]; then
