@@ -13,6 +13,6 @@ concurrency:
 
 jobs:
   security-review:
-    uses: vals-ai/.github/.github/workflows/claude-security-review.yml@95522b7f6cade5151f528315232e78eda82a8108
+    uses: vals-ai/.github/.github/workflows/claude-security-review.yml@ef41db1532e7ec93ac5ee7aa65618dd7fac134a1
     secrets:
       ANTHROPIC_SECURITY_REVIEW_API_KEY: ${{ secrets.ANTHROPIC_SECURITY_REVIEW_API_KEY }}
