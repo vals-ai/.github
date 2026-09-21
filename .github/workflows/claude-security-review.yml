@@ -55,6 +55,24 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
 
+      - name: Prepare finding write-up limits
+        if: steps.credential.outputs.available == 'true'
+        env:
+          STYLE_FILE: ${{ runner.temp }}/security-review-style.txt
+        run: |
+          cat > "$STYLE_FILE" <<'STYLE'
+          **Finding write-up limits (output style for every finding; this is not a vulnerability category):**
+
+          Each field below is rendered verbatim into a GitHub pull request comment, so keep it tight and non-overlapping.
+
+          - description: exactly one sentence, 25 words or fewer, naming the flaw and the component that carries it. This string is rendered as the comment's bold title, so never write a paragraph, background, prior art, or a second sentence.
+          - exploit_scenario: at most 3 sentences and 60 words. Give the attacker's starting position, the single action that abuses the flaw, and the impact. No step-by-step walkthrough, no unrelated resource names, no restating the description.
+          - recommendation: at most 2 sentences and 40 words, written as an imperative. Give one primary fix, and a second option only when the primary may not apply.
+          - Do not repeat a fact in more than one field.
+          - Do not use bold, headings, bullet lists, or code fences inside a field. Inline backticks around an identifier are fine.
+          - Name an identifier or path instead of quoting code.
+          STYLE
+
       - name: Review changes
         if: steps.credential.outputs.available == 'true'
         uses: anthropics/claude-code-security-review@0c6a49f1fa56a1d472575da86a94dbc1edb78eda
@@ -65,6 +83,7 @@ jobs:
           upload-results: 'true'
           run-every-commit: 'true'
           claudecode-timeout: '20'
+          custom-security-scan-instructions: ${{ runner.temp }}/security-review-style.txt
 
       - name: Verify the scanner completed
         if: steps.credential.outputs.available == 'true'
