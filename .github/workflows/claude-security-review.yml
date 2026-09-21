@@ -61,16 +61,14 @@ jobs:
           STYLE_FILE: ${{ runner.temp }}/security-review-style.txt
         run: |
           cat > "$STYLE_FILE" <<'STYLE'
-          **Finding write-up limits (output style for every finding; this is not a vulnerability category):**
+          **Finding write-up limits (output style, not a vulnerability category):**
 
-          Each field below is rendered verbatim into a GitHub pull request comment, so keep it tight and non-overlapping.
+          Each field is rendered verbatim into a pull request comment. Keep them tight.
 
-          - description: exactly one sentence, 25 words or fewer, naming the flaw and the component that carries it. This string is rendered as the comment's bold title, so never write a paragraph, background, prior art, or a second sentence.
-          - exploit_scenario: at most 3 sentences and 60 words. Give the attacker's starting position, the single action that abuses the flaw, and the impact. No step-by-step walkthrough, no unrelated resource names, no restating the description.
-          - recommendation: at most 2 sentences and 40 words, written as an imperative. Give one primary fix, and a second option only when the primary may not apply.
-          - Do not repeat a fact in more than one field.
-          - Do not use bold, headings, bullet lists, or code fences inside a field. Inline backticks around an identifier are fine.
-          - Name an identifier or path instead of quoting code.
+          - description: a couple of sentences naming the flaw and the component that carries it. It is rendered as the comment's bold title, so never write a paragraph.
+          - exploit_scenario: at most 3 sentences and 60 words. The attacker's starting position, the action that abuses the flaw, the impact.
+          - recommendation: at most 2 sentences and 40 words, imperative. One primary fix.
+          - No bold, headings, bullet lists, or code fences inside a field. Inline backticks are fine.
           STYLE
 
       - name: Review changes
