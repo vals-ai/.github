@@ -60,6 +60,7 @@ jobs:
         uses: anthropics/claude-code-security-review@0c6a49f1fa56a1d472575da86a94dbc1edb78eda
         with:
           claude-api-key: ${{ secrets.ANTHROPIC_SECURITY_REVIEW_API_KEY }}
+          claude-model: claude-opus-5
           comment-pr: 'true'
           upload-results: 'true'
           run-every-commit: 'true'
