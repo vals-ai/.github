@@ -1,0 +1,18 @@
+name: Claude security review
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: org-claude-security-review-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  security-review:
+    uses: vals-ai/.github/.github/workflows/claude-security-review.yml@ef41db1532e7ec93ac5ee7aa65618dd7fac134a1
+    secrets:
+      ANTHROPIC_SECURITY_REVIEW_API_KEY: ${{ secrets.ANTHROPIC_SECURITY_REVIEW_API_KEY }}

@@ -1,0 +1,100 @@
+name: Claude security review (reusable)
+
+on:
+  workflow_call:
+    secrets:
+      ANTHROPIC_SECURITY_REVIEW_API_KEY:
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.repository_owner == 'vals-ai' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.type != 'Bot' &&
+      !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Verify current author write access
+        id: trust
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          trusted=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$PR_AUTHOR/permission" --jq '.user.permissions.push == true')
+          echo "trusted=$trusted" >> "$GITHUB_OUTPUT"
+          if [ "$trusted" != 'true' ]; then
+            echo 'Security review skipped: the PR author does not currently have repository write access.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Check dedicated review credential
+        if: steps.trust.outputs.trusted == 'true'
+        id: credential
+        env:
+          REVIEW_KEY: ${{ secrets.ANTHROPIC_SECURITY_REVIEW_API_KEY }}
+        run: |
+          if [ -n "$REVIEW_KEY" ]; then
+            echo 'available=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'available=false' >> "$GITHUB_OUTPUT"
+            echo '::warning::Security review is not configured: ANTHROPIC_SECURITY_REVIEW_API_KEY is missing.'
+            echo 'Security review skipped: the dedicated Anthropic credential has not been configured. This is not a clean security result.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Check out the exact PR revision
+        if: steps.credential.outputs.available == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Prepare finding write-up limits
+        if: steps.credential.outputs.available == 'true'
+        env:
+          STYLE_FILE: ${{ runner.temp }}/security-review-style.txt
+        run: |
+          cat > "$STYLE_FILE" <<'STYLE'
+          **Finding write-up limits (output style, not a vulnerability category):**
+
+          Each field is rendered verbatim into a pull request comment. Keep them tight.
+
+          - description: a couple of sentences naming the flaw and the component that carries it. It is rendered as the comment's bold title, so never write a paragraph.
+          - exploit_scenario: at most 3 sentences and 60 words. The attacker's starting position, the action that abuses the flaw, the impact.
+          - recommendation: at most 2 sentences and 40 words, imperative. One primary fix.
+          - No bold, headings, bullet lists, or code fences inside a field. Inline backticks are fine.
+          STYLE
+
+      - name: Review changes
+        if: steps.credential.outputs.available == 'true'
+        uses: anthropics/claude-code-security-review@0c6a49f1fa56a1d472575da86a94dbc1edb78eda
+        with:
+          claude-api-key: ${{ secrets.ANTHROPIC_SECURITY_REVIEW_API_KEY }}
+          claude-model: claude-opus-5
+          comment-pr: 'true'
+          upload-results: 'true'
+          run-every-commit: 'true'
+          claudecode-timeout: '20'
+          custom-security-scan-instructions: ${{ runner.temp }}/security-review-style.txt
+
+      - name: Verify the scanner completed
+        if: steps.credential.outputs.available == 'true'
+        run: |
+          if ! jq -e '
+            type == "object" and
+            (.error == null) and
+            (.findings | type == "array") and
+            (.analysis_summary.review_completed != false) and
+            (.filtering_summary | type == "object")
+          ' claudecode-results.json > /dev/null; then
+            echo '::error::Security analysis did not complete. Inspect the scanner logs; this is not a clean security result.'
+            exit 1
+          fi
+          count=$(jq '.findings | length' claudecode-results.json)
+          printf 'Security review completed with %s finding(s). Findings are advisory; inspect the PR comments and security-review-results artifact.\n' "$count" >> "$GITHUB_STEP_SUMMARY"
