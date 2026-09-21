@@ -1,0 +1,20 @@
+name: Security review eligibility diagnostics
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  eligibility:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          EVENT: ${{ github.event_name }}
+          OWNER: ${{ github.repository_owner }}
+          REPOSITORY: ${{ github.repository }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          ASSOCIATION: ${{ github.event.pull_request.author_association }}
+          USER_TYPE: ${{ github.event.pull_request.user.type }}
+          DRAFT: ${{ github.event.pull_request.draft }}
+          ELIGIBLE: ${{ github.event_name == 'pull_request' && github.repository_owner == 'vals-ai' && github.event.pull_request.head.repo.full_name == github.repository && contains(fromJSON('["MEMBER", "OWNER"]'), github.event.pull_request.author_association) && github.event.pull_request.user.type != 'Bot' && !github.event.pull_request.draft }}
+        run: |
+          printf 'event=%s owner=%s repository=%s head=%s association=%s type=%s draft=%s eligible=%s\n' "$EVENT" "$OWNER" "$REPOSITORY" "$HEAD_REPOSITORY" "$ASSOCIATION" "$USER_TYPE" "$DRAFT" "$ELIGIBLE"
