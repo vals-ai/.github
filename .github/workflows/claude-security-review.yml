@@ -42,7 +42,6 @@ jobs:
           role-session-name: security-review-${{ github.run_id }}
           output-credentials: true
           output-env-credentials: false
-          allowed-account-ids: '613431292675'
 
       - name: Read the dedicated key from Secrets Manager
         if: steps.trust.outputs.trusted == 'true'
