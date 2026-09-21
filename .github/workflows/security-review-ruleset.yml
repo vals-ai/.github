@@ -1,0 +1,15 @@
+name: Claude security review (ruleset pilot)
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  security-review:
+    if: github.repository == 'vals-ai/shared-infra'
+    uses: vals-ai/.github/.github/workflows/claude-security-review.yml@039371b70a5b30efb5683ff2cdce237aa16c392b
+    secrets:
+      ANTHROPIC_SECURITY_REVIEW_API_KEY: ${{ secrets.ANTHROPIC_SECURITY_REVIEW_API_KEY }}
