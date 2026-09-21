@@ -4,7 +4,7 @@ The reusable `.github/workflows/claude-security-review.yml` runs Anthropic's sec
 
 ## Coverage and trust
 
-Callers trigger on opened, synchronized, reopened, and ready-for-review pull requests. Only non-draft, same-repository PRs authored by organization members or owners run. Forks, outside collaborators, and bots skip. An internal PR containing copied external code still needs human judgment: the upstream action is not hardened against prompt injection.
+Callers trigger on opened, synchronized, reopened, and ready-for-review pull requests. Only non-draft, same-repository PRs authored by users with current repository write access run. Forks, authors without write access, and bots skip. The gate queries current collaborator permissions because webhook author-association metadata can be stale. An internal PR containing copied external code still needs human judgment: the upstream action is not hardened against prompt injection.
 
 Use GitHub-hosted ephemeral runners, read-only contents access, PR-comment permission, no persisted checkout credential, no AWS role, and no application secrets. Do not change this to `pull_request_target` or enable fork secrets. A dedicated, budget-limited Anthropic workspace/key confines exposure to review usage. Reviewing sends repository code to Anthropic.
 
