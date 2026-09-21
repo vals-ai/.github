@@ -2,10 +2,12 @@ name: Claude security review (reusable)
 
 on:
   workflow_call:
+    secrets:
+      ANTHROPIC_SECURITY_REVIEW_API_KEY:
+        required: false
 
 permissions:
   contents: read
-  id-token: write
   pull-requests: write
 
 jobs:
@@ -31,51 +33,22 @@ jobs:
             echo 'Security review skipped: the PR author does not currently have repository write access.' >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Assume the dedicated secret-reader role
-        if: steps.trust.outputs.trusted == 'true'
-        id: aws
-        uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c # v4
-        with:
-          role-to-assume: arn:aws:iam::613431292675:role/shared-infra-claude-security-review
-          aws-region: us-east-1
-          role-duration-seconds: 900
-          role-session-name: security-review-${{ github.run_id }}
-          output-credentials: true
-          output-env-credentials: false
-
-      - name: Read the dedicated key from Secrets Manager
+      - name: Check dedicated review credential
         if: steps.trust.outputs.trusted == 'true'
         id: credential
         env:
-          AWS_ACCESS_KEY_ID: ${{ steps.aws.outputs.aws-access-key-id }}
-          AWS_SECRET_ACCESS_KEY: ${{ steps.aws.outputs.aws-secret-access-key }}
-          AWS_SESSION_TOKEN: ${{ steps.aws.outputs.aws-session-token }}
-          AWS_REGION: us-east-1
-          AWS_EC2_METADATA_DISABLED: 'true'
+          REVIEW_KEY: ${{ secrets.ANTHROPIC_SECURITY_REVIEW_API_KEY }}
         run: |
-          python3 - <<'PYTHON'
-          import json
-          import os
-          import re
-          import subprocess
-
-          result = subprocess.run(
-              ["aws", "secretsmanager", "get-secret-value", "--secret-id",
-               "management/claude-security-review", "--output", "json"],
-              capture_output=True, text=True,
-          )
-          if result.returncode:
-              raise SystemExit("Unable to retrieve the dedicated review key from Secrets Manager.")
-          key = json.loads(result.stdout)["SecretString"].strip()
-          if not re.fullmatch(r"sk-ant-[A-Za-z0-9_-]+", key):
-              raise SystemExit("The secret must contain a raw Anthropic API key.")
-          print(f"::add-mask::{key}")
-          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-              output.write(f"key={key}\n")
-          PYTHON
+          if [ -n "$REVIEW_KEY" ]; then
+            echo 'available=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'available=false' >> "$GITHUB_OUTPUT"
+            echo '::warning::Security review is not configured: ANTHROPIC_SECURITY_REVIEW_API_KEY is missing.'
+            echo 'Security review skipped: the dedicated Anthropic credential has not been configured. This is not a clean security result.' >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Check out the exact PR revision
-        if: steps.trust.outputs.trusted == 'true'
+        if: steps.credential.outputs.available == 'true'
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
@@ -83,17 +56,17 @@ jobs:
           persist-credentials: false
 
       - name: Review changes
-        if: steps.trust.outputs.trusted == 'true'
+        if: steps.credential.outputs.available == 'true'
         uses: anthropics/claude-code-security-review@0c6a49f1fa56a1d472575da86a94dbc1edb78eda
         with:
-          claude-api-key: ${{ steps.credential.outputs.key }}
+          claude-api-key: ${{ secrets.ANTHROPIC_SECURITY_REVIEW_API_KEY }}
           comment-pr: 'true'
           upload-results: 'true'
           run-every-commit: 'true'
           claudecode-timeout: '20'
 
       - name: Verify the scanner completed
-        if: steps.trust.outputs.trusted == 'true'
+        if: steps.credential.outputs.available == 'true'
         run: |
           if ! jq -e '
             type == "object" and
