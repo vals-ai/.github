@@ -19,7 +19,7 @@ jobs:
       github.event.pull_request.user.type != 'Bot' &&
       !github.event.pull_request.draft
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 50
     steps:
       - name: Verify current author write access
         id: trust
@@ -80,7 +80,7 @@ jobs:
           comment-pr: 'true'
           upload-results: 'true'
           run-every-commit: 'true'
-          claudecode-timeout: '20'
+          claudecode-timeout: '40'
           custom-security-scan-instructions: ${{ runner.temp }}/security-review-style.txt
 
       - name: Verify the scanner completed
