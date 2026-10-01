@@ -1,0 +1,18 @@
+[project]
+name = "vals-security-review-checks"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8", "requests>=2.32", "ruff>=0.14", "basedpyright>=1.31", "types-requests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.basedpyright]
+typeCheckingMode = "strict"
+include = [".github/security-review", "tests"]
