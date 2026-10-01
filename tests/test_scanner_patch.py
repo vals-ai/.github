@@ -80,6 +80,7 @@ def patched_client(tmp_path: Path, original_source: str, monkeypatch: pytest.Mon
         "Dict": dict,
         "Any": Any,
         "Path": Path,
+        "read_diff": getattr(module, "read_diff"),
     }
     exec(compile(ast.Module(body=[client_class], type_ignores=[]), str(target), "exec"), namespace)
     monkeypatch.setenv("GITHUB_TOKEN", "not-a-real-token")

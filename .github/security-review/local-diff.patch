@@ -1,6 +1,14 @@
 --- a/claudecode/github_action_audit.py
 +++ b/claudecode/github_action_audit.py
-@@ -74,11 +74,26 @@
+@@ -26,6 +26,7 @@
+     SUBPROCESS_TIMEOUT
+ )
+ from claudecode.logger import get_logger
++from local_diff import read_diff
+ 
+ logger = get_logger(__name__)
+ 
+@@ -74,11 +75,26 @@
          response.raise_for_status()
          pr_data = response.json()
          
@@ -32,7 +40,7 @@
          
          return {
              'number': pr_data['number'],
-@@ -127,13 +142,18 @@
+@@ -127,13 +143,16 @@
              Complete PR diff in unified format
          """
          url = f"https://api.github.com/repos/{repo_name}/pulls/{pr_number}"
@@ -49,8 +57,6 @@
 +        head = os.environ['SECURITY_REVIEW_HEAD_SHA']
 +        if (current['base']['sha'], current['head']['sha']) != (base, head):
 +            raise ValueError('PR revision changed; start a new review')
-+
-+        from local_diff import read_diff
 +
 +        difference = read_diff(Path(os.environ['REPO_PATH']), base, head)
 +        return self._filter_generated_files(difference)
