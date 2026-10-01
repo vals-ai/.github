@@ -70,7 +70,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: vals-ai/.github
-          ref: 1d41fe181cda88237ff5766af80d5c7f22f42320
+          ref: 83845361f89d31929776ae105a76e7d670928ab4
           path: .security-review-tools
           persist-credentials: false
 
