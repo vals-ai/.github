@@ -1,0 +1,32 @@
+name: Security review adapter tests
+
+on:
+  pull_request:
+    paths:
+      - '.github/security-review/**'
+      - '.github/workflows/claude-security-review.yml'
+      - '.github/workflows/security-review-tests.yml'
+      - 'tests/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'Makefile'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: '3.12'
+      - run: uv sync --frozen
+      - run: uv run ruff format --check .github/security-review tests
+      - run: uv run ruff check .github/security-review tests
+      - run: make typecheck
+      - run: make test

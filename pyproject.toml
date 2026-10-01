@@ -5,7 +5,15 @@ requires-python = ">=3.12"
 dependencies = []
 
 [dependency-groups]
-dev = ["pytest>=8", "requests>=2.32", "ruff>=0.14", "basedpyright>=1.31", "types-requests"]
+dev = [
+    "pytest>=8",
+    "requests>=2.32",
+    "ruff>=0.14",
+    "basedpyright>=1.31",
+    "types-requests",
+    "pyyaml>=6.0.3",
+    "types-pyyaml>=6.0.12.20260906",
+]
 
 [tool.ruff]
 line-length = 100
