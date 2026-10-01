@@ -29,7 +29,8 @@ The pilot detected command injection and left the argument-list control unflagge
 The GitHub single-diff API rejects PRs over 300 files. Its file-list API also
 requires pagination. The adapter uses a full checkout of the event's head and
 base commits to obtain the diff from their merge base, and reads every page of
-the file inventory. An incomplete inventory, changed PR revision, shallow
+the file inventory. The comment publisher also paginates all changed files so
+findings beyond file 100 can appear on the PR. An incomplete inventory, changed PR revision, shallow
 checkout, dirty tracked files or ambiguous merge base stops the scan. The
 upstream generated-file and directory filters remain unchanged. GitHub caps
 the file-list API at 3,000 files; larger PRs stop rather than silently omit files.
@@ -40,7 +41,7 @@ The upstream patch must apply exactly; an incompatible upstream update stops
 before the scan. The existing completed-result check still applies.
 
 Run `make format`, `make typecheck` and `make test` for adapter changes. Tests
-fetch only two source files at the pinned public upstream commit and cache them
+fetch only three source files at the pinned public upstream commit and cache them
 under `.cache/`. They execute the patched client against synthetic Git history
 and HTTP responses without an Anthropic key or paid model calls.
 

@@ -39,7 +39,7 @@ def original_source() -> str:
 
 
 @pytest.fixture
-def patched_client(tmp_path: Path, original_source: str, monkeypatch: pytest.MonkeyPatch) -> Client:
+def patched_scanner(tmp_path: Path, original_source: str) -> Path:
     patch = ROOT / ".github/security-review/local-diff.patch"
     assert patch.exists(), "Scanner patch is missing"
     target = tmp_path / "claudecode/github_action_audit.py"
@@ -54,11 +54,27 @@ def patched_client(tmp_path: Path, original_source: str, monkeypatch: pytest.Mon
         ) as response:
             action_cache.write_bytes(response.read())
     (tmp_path / "action.yml").write_text(action_cache.read_text())
+    comment_cache = ROOT / ".cache" / SCANNER_COMMIT / "comment-pr-findings.js"
+    if not comment_cache.exists():
+        with urllib.request.urlopen(
+            "https://raw.githubusercontent.com/anthropics/claude-code-security-review/"
+            f"{SCANNER_COMMIT}/scripts/comment-pr-findings.js",
+            timeout=30,
+        ) as response:
+            comment_cache.write_bytes(response.read())
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts/comment-pr-findings.js").write_text(comment_cache.read_text())
     subprocess.run(["git", "apply", str(patch)], cwd=tmp_path, check=True)
     assert (
         'export REPO_PATH="${SECURITY_REVIEW_REPO_PATH:?Review source path is required}"'
         in (tmp_path / "action.yml").read_text()
     )
+    return tmp_path
+
+
+@pytest.fixture
+def patched_client(patched_scanner: Path, monkeypatch: pytest.MonkeyPatch) -> Client:
+    target = patched_scanner / "claudecode/github_action_audit.py"
     parsed = ast.parse(target.read_text())
     client_class = next(
         item
@@ -227,3 +243,16 @@ def test_revision_change_after_inventory_stops_diff(
     patched_client.get_pr_data("vals-ai/valsmith", 266)
     with pytest.raises(ValueError, match="revision"):
         patched_client.get_pr_diff("vals-ai/valsmith", 266)
+
+
+@pytest.mark.parametrize("scenario", ["last-file", "truncated", "changed-revision"])
+def test_comment_publisher_preserves_late_file_findings(patched_scanner: Path, scenario: str):
+    subprocess.run(
+        [
+            "node",
+            str(ROOT / "tests/comment_publisher_check.cjs"),
+            str(patched_scanner / "scripts/comment-pr-findings.js"),
+            scenario,
+        ],
+        check=True,
+    )

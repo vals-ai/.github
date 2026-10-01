@@ -74,3 +74,34 @@
          cd "$ACTION_PATH"
          
          # Enable verbose debugging
+--- a/scripts/comment-pr-findings.js
++++ b/scripts/comment-pr-findings.js
+@@ -104,8 +104,26 @@
+       return;
+     }
+     
+-    // Get the PR diff to map file lines to diff positions
+-    const prFiles = ghApi(`/repos/${context.repo.owner}/${context.repo.repo}/pulls/${context.issue.number}/files?per_page=100`);
++    const prEndpoint = `/repos/${context.repo.owner}/${context.repo.repo}/pulls/${context.issue.number}`;
++    const current = ghApi(prEndpoint);
++    if (current.head.sha !== context.payload.pull_request.head.sha ||
++        current.base.sha !== context.payload.pull_request.base.sha) {
++      throw new Error('PR revision changed; start a new review');
++    }
++    const prFiles = [];
++    let page = 1;
++    while (prFiles.length < current.changed_files) {
++      const batch = ghApi(`${prEndpoint}/files?per_page=100&page=${page}`);
++      if (!Array.isArray(batch) || batch.length === 0) {
++        throw new Error('PR file inventory is incomplete; comments stopped');
++      }
++      prFiles.push(...batch);
++      page += 1;
++    }
++    if (prFiles.length !== current.changed_files ||
++        new Set(prFiles.map(file => file.filename)).size !== prFiles.length) {
++      throw new Error('PR file inventory is incomplete; comments stopped');
++    }
+     
+     // Create a map of file paths to their diff information
+     const fileMap = {};
