@@ -52,8 +52,34 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 2
+          path: source
+          fetch-depth: 0
           persist-credentials: false
+
+      - name: Check out the pinned scanner
+        if: steps.credential.outputs.available == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: anthropics/claude-code-security-review
+          ref: 0c6a49f1fa56a1d472575da86a94dbc1edb78eda
+          path: .security-review-action
+          persist-credentials: false
+
+      - name: Check out the reviewed Git diff adapter
+        if: steps.credential.outputs.available == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: vals-ai/.github
+          ref: 83845361f89d31929776ae105a76e7d670928ab4
+          path: .security-review-tools
+          persist-credentials: false
+
+      - name: Apply the Git diff adapter to the pinned scanner
+        if: steps.credential.outputs.available == 'true'
+        run: |
+          git -C .security-review-action apply --check "$GITHUB_WORKSPACE/.security-review-tools/.github/security-review/local-diff.patch"
+          git -C .security-review-action apply "$GITHUB_WORKSPACE/.security-review-tools/.github/security-review/local-diff.patch"
+          cp .security-review-tools/.github/security-review/local_diff.py .security-review-action/local_diff.py
 
       - name: Prepare finding write-up limits
         if: steps.credential.outputs.available == 'true'
@@ -73,7 +99,11 @@ jobs:
 
       - name: Review changes
         if: steps.credential.outputs.available == 'true'
-        uses: anthropics/claude-code-security-review@0c6a49f1fa56a1d472575da86a94dbc1edb78eda
+        uses: ./.security-review-action
+        env:
+          SECURITY_REVIEW_REPO_PATH: ${{ github.workspace }}/source
+          SECURITY_REVIEW_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          SECURITY_REVIEW_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         with:
           claude-api-key: ${{ secrets.ANTHROPIC_SECURITY_REVIEW_API_KEY }}
           claude-model: claude-opus-5

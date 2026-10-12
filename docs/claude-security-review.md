@@ -23,3 +23,30 @@ The reusable workflow, upstream action, and checkout are pinned to commits. Upst
 Target all repositories through the organization ruleset so future repositories are included automatically. Target all branches only while using Evaluate mode. Active mode would enforce completion and block direct pushes; do not enable it without narrowing branch targets and deciding the desired merge policy. Exclude repositories through ruleset targeting to disable review. Actions must be enabled and the organization secret must be accessible to each target repository. Changing ruleset targets does not retroactively scan existing PRs; their next synchronize or reopen event triggers review.
 
 The pilot detected command injection and left the argument-list control unflagged. Upstream currently validates its optional false-positive filter against a retired Haiku model, so that filter disables itself and retains findings. Primary Claude analysis and hard exclusions still run; expect more false positives until upstream fixes its validation call.
+
+## Large pull requests
+
+The GitHub single-diff API rejects PRs over 300 files. Its file-list API also
+requires pagination. The adapter uses a full checkout of the event's head and
+base commits to obtain the diff from their merge base, and reads every page of
+the file inventory. The comment publisher also paginates all changed files so
+findings beyond file 100 can appear on the PR. An incomplete inventory, changed PR revision, shallow
+checkout, dirty tracked files or ambiguous merge base stops the scan. The
+upstream generated-file and directory filters remain unchanged. GitHub caps
+the file-list API at 3,000 files; larger PRs stop rather than silently omit files.
+
+The reviewed source, pinned upstream scanner and pinned adapter are separate
+checkout directories. The PR's source cannot replace the scanner or adapter.
+The upstream patch must apply exactly; an incompatible upstream update stops
+before the scan. The existing completed-result check still applies.
+
+Run `make format`, `make typecheck` and `make test` for adapter changes. Tests
+fetch only three source files at the pinned public upstream commit and cache them
+under `.cache/`. They execute the patched client against synthetic Git history
+and HTTP responses without an Anthropic key or paid model calls.
+
+The adapter and reusable workflow are pinned independently. Review and retain
+the adapter commit before updating the workflow's adapter pin. Activation also
+requires a new reusable-workflow pin in `security-review-ruleset.yml` and an
+explicit organization ruleset update. This change does not update the active
+ruleset or bypass a failed review.
