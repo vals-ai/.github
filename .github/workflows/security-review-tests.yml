@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/security-review/**'
       - '.github/workflows/claude-security-review.yml'
+      - '.github/workflows/security-review-ruleset.yml'
       - '.github/workflows/security-review-tests.yml'
       - 'tests/**'
       - 'pyproject.toml'
