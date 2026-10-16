@@ -81,12 +81,21 @@ jobs:
           git -C .security-review-action apply "$GITHUB_WORKSPACE/.security-review-tools/.github/security-review/local-diff.patch"
           cp .security-review-tools/.github/security-review/local_diff.py .security-review-action/local_diff.py
 
-      - name: Prepare finding write-up limits
+      - name: Prepare custom scan instructions
         if: steps.credential.outputs.available == 'true'
         env:
-          STYLE_FILE: ${{ runner.temp }}/security-review-style.txt
+          INSTRUCTIONS_FILE: ${{ runner.temp }}/security-review-instructions.txt
         run: |
-          cat > "$STYLE_FILE" <<'STYLE'
+          cat > "$INSTRUCTIONS_FILE" <<'INSTRUCTIONS'
+          **Vals Business Confidentiality (paywalled benchmark data and frontier-lab trust):**
+
+          Vals sells access to private benchmark data and evaluates pre-release models under confidentiality with frontier labs. A change that moves confidential material onto a public surface is a data exposure even without an attacker: publishing it is the breach. Writing data into a published artifact is exposure, not "data stored on disk". Report it as HIGH when the data reaches a public surface on merge or the next routine export/deploy, MEDIUM when it needs a further step.
+
+          - Public surfaces: anything bundled into the public website or its data files (frontend `src/data/`, generated `*_view*.json`, static assets), public API or MCP responses, public repositories, packages or container images, unauthenticated buckets or URLs, and logs or CI artifacts readable outside Vals.
+          - Paywalled benchmark data: questions, prompts, task inputs, reference answers, rubrics, ground truth, test cases, grader prompts, and per-task model outputs or trajectories from datasets that are private, held-out, scored, or sold. Flag code that publishes them, and removal or weakening of gates that restrict publication to public splits, reviewed examples, or allowlists.
+          - Lab-confidential information: unreleased or codename model identifiers, provider endpoint and routing IDs, pre-release or embargoed results, early-access status, provider rate limits, quotas and client settings, and contract or pricing terms. Flag new fields or overrides that carry these into public outputs, removal of strip lists, visibility flags, or release-date gates, and serializers that switch from an allowlist of fields to dumping every field.
+          - Name the public surface, the class of confidential data, and the line that introduces the flow. Recommend an allowlist or gate. Skip data for benchmarks marked public and models the repository already treats as released; flag when release or access status is unknown, private, or early-access.
+
           **Finding write-up limits (output style, not a vulnerability category):**
 
           Each field is rendered verbatim into a pull request comment. Keep them tight.
@@ -95,7 +104,7 @@ jobs:
           - exploit_scenario: at most 3 sentences and 60 words. The attacker's starting position, the action that abuses the flaw, the impact.
           - recommendation: at most 2 sentences and 40 words, imperative. One primary fix.
           - No bold, headings, bullet lists, or code fences inside a field. Inline backticks are fine.
-          STYLE
+          INSTRUCTIONS
 
       - name: Review changes
         if: steps.credential.outputs.available == 'true'
@@ -111,7 +120,7 @@ jobs:
           upload-results: 'true'
           run-every-commit: 'true'
           claudecode-timeout: '40'
-          custom-security-scan-instructions: ${{ runner.temp }}/security-review-style.txt
+          custom-security-scan-instructions: ${{ runner.temp }}/security-review-instructions.txt
 
       - name: Verify the scanner completed
         if: steps.credential.outputs.available == 'true'
