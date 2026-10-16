@@ -32,3 +32,19 @@ def test_scanner_and_helper_checkouts_are_pinned_outside_reviewed_tree():
     assert review["env"]["SECURITY_REVIEW_HEAD_SHA"] == "${{ github.event.pull_request.head.sha }}"
     assert review["env"]["SECURITY_REVIEW_BASE_SHA"] == "${{ github.event.pull_request.base.sha }}"
     assert any(step.get("name") == "Verify the scanner completed" for step in steps)
+
+
+def test_review_receives_vals_confidentiality_and_style_instructions():
+    root = Path(__file__).parents[1]
+    workflow = cast(
+        dict[str, Any],
+        yaml.safe_load((root / ".github/workflows/claude-security-review.yml").read_text()),
+    )
+    steps = cast(list[dict[str, Any]], workflow["jobs"]["review"]["steps"])
+    prepare = next(step for step in steps if step.get("name") == "Prepare custom scan instructions")
+    review = next(step for step in steps if step.get("name") == "Review changes")
+    path = "${{ runner.temp }}/security-review-instructions.txt"
+    assert prepare["env"]["INSTRUCTIONS_FILE"] == path
+    assert review["with"]["custom-security-scan-instructions"] == path
+    assert "Vals Business Confidentiality" in prepare["run"]
+    assert "Finding write-up limits" in prepare["run"]
