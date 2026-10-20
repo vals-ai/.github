@@ -6,7 +6,7 @@ The vals-ai organization ruleset runs `.github/workflows/security-review-ruleset
 
 Set the vals-ai organization Actions secret `ANTHROPIC_SECURITY_REVIEW_API_KEY` to a dedicated Anthropic inference API key, with access to enrolled repositories. The retained backup is `management/claude-security-review` in vals-bench Secrets Manager (`us-east-1`), managed through shared-infra. Rotations must update both copies. Scanner jobs have no AWS permissions or application secrets.
 
-Use an Anthropic workspace spending limit. The workflow's 30-minute job limit and 20-minute scanner timeout are not monetary caps. Reviewing sends repository code to Anthropic.
+Use an Anthropic workspace spending limit. The workflow's 50-minute job limit and 40-minute scanner timeout are not monetary caps. Reviewing sends repository code to Anthropic.
 
 ## Behavior
 
@@ -39,6 +39,12 @@ The reviewed source, pinned upstream scanner and pinned adapter are separate
 checkout directories. The PR's source cannot replace the scanner or adapter.
 The upstream patch must apply exactly; an incompatible upstream update stops
 before the scan. The existing completed-result check still applies.
+
+The pinned upstream scanner ignores its `claudecode-timeout` input. The adapter
+passes the exported `CLAUDE_TIMEOUT` value to the scanner process and accepts
+integer limits from 1 to 40 minutes. Without that variable, the upstream
+20-minute default remains. Invalid limits stop the scan. A process timeout still
+produces an error and cannot pass the completed-result check.
 
 Run `make format`, `make typecheck` and `make test` for adapter changes. Tests
 fetch only three source files at the pinned public upstream commit and cache them
