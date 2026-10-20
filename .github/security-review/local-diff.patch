@@ -63,6 +63,19 @@
      
      def _is_excluded(self, filepath: str) -> bool:
          """Check if a file should be excluded based on directory patterns."""
+@@ -387,7 +406,11 @@
+         raise ConfigurationError(f'Failed to initialize GitHub client: {str(e)}')
+     
+     try:
+-        claude_runner = SimpleClaudeRunner()
++        timeout_text = os.environ.get('CLAUDE_TIMEOUT', str(SUBPROCESS_TIMEOUT // 60))
++        if re.fullmatch(r'[0-9]+', timeout_text) is None or not 1 <= int(timeout_text) <= 40:
++            raise ValueError('Scanner timeout must be an integer from 1 to 40 minutes')
++
++        claude_runner = SimpleClaudeRunner(timeout_minutes=int(timeout_text))
+     except Exception as e:
+         raise ConfigurationError(f'Failed to initialize Claude runner: {str(e)}')
+         
 --- a/action.yml
 +++ b/action.yml
 @@ -217,7 +217,7 @@

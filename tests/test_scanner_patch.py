@@ -10,7 +10,7 @@ import sys
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, Optional, Protocol, cast
 
 import pytest
 import requests
@@ -256,3 +256,81 @@ def test_comment_publisher_preserves_late_file_findings(patched_scanner: Path, s
         ],
         check=True,
     )
+
+
+class Runner(Protocol):
+    def run_security_audit(
+        self, repo_dir: Path, prompt: str
+    ) -> tuple[bool, str, dict[str, Any]]: ...
+
+
+@pytest.fixture
+def initialize_scanner(
+    patched_scanner: Path, monkeypatch: pytest.MonkeyPatch
+) -> Callable[[], tuple[Client, Runner]]:
+    target = patched_scanner / "claudecode/github_action_audit.py"
+    selected_names = {
+        "ConfigurationError",
+        "GitHubActionClient",
+        "SimpleClaudeRunner",
+        "initialize_clients",
+    }
+    selected_nodes: list[ast.stmt] = [
+        node
+        for node in ast.parse(target.read_text()).body
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef)) and node.name in selected_names
+    ]
+    namespace: dict[str, Any] = {
+        "os": os,
+        "sys": sys,
+        "re": re,
+        "subprocess": subprocess,
+        "Dict": dict,
+        "Tuple": tuple,
+        "Optional": Optional,
+        "Any": Any,
+        "Path": Path,
+        "SUBPROCESS_TIMEOUT": 1200,
+        "DEFAULT_CLAUDE_MODEL": "claude-opus-5",
+    }
+    exec(compile(ast.Module(body=selected_nodes, type_ignores=[]), str(target), "exec"), namespace)
+    monkeypatch.setenv("GITHUB_TOKEN", "not-a-real-token")
+    monkeypatch.delenv("CLAUDE_TIMEOUT", raising=False)
+    return cast(Callable[[], tuple[Client, Runner]], namespace["initialize_clients"])
+
+
+@pytest.mark.parametrize(("minutes", "seconds"), [(None, 1200), ("1", 60), ("40", 2400)])
+def test_configured_timeout_reaches_scanner_process(
+    initialize_scanner: Callable[[], tuple[Client, Runner]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    minutes: str | None,
+    seconds: int,
+):
+    if minutes is not None:
+        monkeypatch.setenv("CLAUDE_TIMEOUT", minutes)
+
+    observed_limits: list[int] = []
+
+    def timed_out(command: list[str], *, timeout: int, **_arguments: object) -> None:
+        observed_limits.append(timeout)
+        raise subprocess.TimeoutExpired(command, timeout)
+
+    monkeypatch.setattr(subprocess, "run", timed_out)
+    _, runner = initialize_scanner()
+    completed, error, findings = runner.run_security_audit(tmp_path, "Review the change")
+    assert observed_limits == [seconds]
+    assert completed is False
+    assert error == f"Claude Code execution timed out after {seconds // 60} minutes"
+    assert findings == {}
+
+
+@pytest.mark.parametrize("minutes", ["", "0", "-1", "41", "1.5", "invalid"])
+def test_invalid_timeout_stops_before_scanner_execution(
+    initialize_scanner: Callable[[], tuple[Client, Runner]],
+    monkeypatch: pytest.MonkeyPatch,
+    minutes: str,
+):
+    monkeypatch.setenv("CLAUDE_TIMEOUT", minutes)
+    with pytest.raises(ValueError, match="timeout"):
+        initialize_scanner()
