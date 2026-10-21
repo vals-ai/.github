@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
@@ -280,7 +281,20 @@ def initialize_scanner(
         for node in ast.parse(target.read_text()).body
         if isinstance(node, (ast.ClassDef, ast.FunctionDef)) and node.name in selected_names
     ]
+
+    def parse_json(text: str, context: str) -> tuple[bool, Any]:
+        try:
+            return True, json.loads(text)
+        except ValueError:
+            return False, None
+
+    def no_sleep(seconds: float) -> None:
+        pass
+
+    monkeypatch.setattr(time, "sleep", no_sleep)
     namespace: dict[str, Any] = {
+        "time": time,
+        "parse_json_with_fallbacks": parse_json,
         "os": os,
         "sys": sys,
         "re": re,
@@ -334,3 +348,69 @@ def test_invalid_timeout_stops_before_scanner_execution(
     monkeypatch.setenv("CLAUDE_TIMEOUT", minutes)
     with pytest.raises(ValueError, match="timeout"):
         initialize_scanner()
+
+
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_context_overflow_returns_fallback_before_retry(
+    initialize_scanner: Callable[[], tuple[Client, Runner]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    returncode: int,
+):
+    observed: list[object] = []
+    payload = {
+        "type": "result",
+        "subtype": "success",
+        "is_error": True,
+        "result": "Prompt is too long · the request is ~2313316 tokens (limit 1000000)",
+    }
+
+    def overflow(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        observed.append(args)
+        return subprocess.CompletedProcess([], returncode, json.dumps(payload), "")
+
+    monkeypatch.setattr(subprocess, "run", overflow)
+    _, runner = initialize_scanner()
+    assert runner.run_security_audit(tmp_path, "large diff") == (False, "PROMPT_TOO_LONG", {})
+    assert len(observed) == 1
+
+
+def test_successful_finding_mentioning_context_limit_is_preserved(
+    initialize_scanner: Callable[[], tuple[Client, Runner]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    findings = {
+        "findings": [{"description": "Prompt is too long appears in untrusted app content"}],
+        "analysis_summary": {"review_completed": True},
+    }
+    payload = {"type": "result", "is_error": False, "result": json.dumps(findings)}
+
+    def completed(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess([], 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(subprocess, "run", completed)
+    _, runner = initialize_scanner()
+    assert runner.run_security_audit(tmp_path, "diff") == (True, "", findings)
+
+
+def test_unrelated_cli_failure_remains_a_failure(
+    initialize_scanner: Callable[[], tuple[Client, Runner]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    observed: list[object] = []
+
+    def failure(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        observed.append(args)
+        return subprocess.CompletedProcess(
+            [], 1, '{"type":"result","is_error":true,"result":"Authentication failed"}', "denied"
+        )
+
+    monkeypatch.setattr(subprocess, "run", failure)
+    _, runner = initialize_scanner()
+    success, error, findings = runner.run_security_audit(tmp_path, "diff")
+    assert not success
+    assert "return code 1" in error
+    assert findings == {}
+    assert len(observed) == 3

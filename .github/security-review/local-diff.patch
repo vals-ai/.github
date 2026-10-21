@@ -63,6 +63,43 @@
      
      def _is_excluded(self, filepath: str) -> bool:
          """Check if a file should be excluded based on directory patterns."""
+@@ -240,6 +259,17 @@
+                     timeout=self.timeout_seconds
+                 )
+                 
++                # Context-limit errors can exit nonzero and include explanatory
++                # suffixes. Detect them before generic retry/error handling so
++                # main can retry with repository exploration instead of the diff.
++                success, parsed_result = parse_json_with_fallbacks(result.stdout, "Claude Code output")
++                if (success and isinstance(parsed_result, dict) and
++                    parsed_result.get('type') == 'result' and
++                    parsed_result.get('is_error') and
++                    isinstance(parsed_result.get('result'), str) and
++                    parsed_result['result'].startswith('Prompt is too long')):
++                    return False, "PROMPT_TOO_LONG", {}
++
+                 if result.returncode != 0:
+                     if attempt == NUM_RETRIES - 1:
+                         error_details = f"Claude Code execution failed with return code {result.returncode}\n"
+@@ -251,18 +281,7 @@
+                         # Note: We don't do exponential backoff here to keep the runtime reasonable
+                         continue  # Retry
+                 
+-                # Parse JSON output
+-                success, parsed_result = parse_json_with_fallbacks(result.stdout, "Claude Code output")
+-                
+                 if success:
+-                    # Check for "Prompt is too long" error that should trigger retry without diff
+-                    if (isinstance(parsed_result, dict) and 
+-                        parsed_result.get('type') == 'result' and 
+-                        parsed_result.get('subtype') == 'success' and
+-                        parsed_result.get('is_error') and
+-                        parsed_result.get('result') == 'Prompt is too long'):
+-                        return False, "PROMPT_TOO_LONG", {}
+-                    
+                     # Check for error_during_execution that should trigger retry
+                     if (isinstance(parsed_result, dict) and 
+                         parsed_result.get('type') == 'result' and 
 @@ -387,7 +406,11 @@
          raise ConfigurationError(f'Failed to initialize GitHub client: {str(e)}')
      
