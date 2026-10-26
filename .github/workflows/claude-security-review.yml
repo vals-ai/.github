@@ -61,6 +61,8 @@ jobs:
           STYLE_FILE: ${{ runner.temp }}/security-review-style.txt
         run: |
           cat > "$STYLE_FILE" <<'STYLE'
+          Flag package downloads or installs introduced or changed by the PR/commit when their actual install path does not enforce a minimum package release age of 7 days, including transitive dependencies; version pins alone do not satisfy this policy.
+
           **Finding write-up limits (output style, not a vulnerability category):**
 
           Each field is rendered verbatim into a pull request comment. Keep them tight.
