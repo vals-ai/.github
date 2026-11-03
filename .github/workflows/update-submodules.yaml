@@ -120,7 +120,7 @@ jobs:
           fi
 
           # Check only the services that moved. The other services were checked when they were pinned.
-          mapfile -t changed_submodules < <(git diff --cached --name-only)
+          mapfile -d '' -t changed_submodules < <(git diff --cached --name-only -z)
           GIT_LFS_SKIP_SMUDGE=1 git submodule update --init --recursive -- "${changed_submodules[@]}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
