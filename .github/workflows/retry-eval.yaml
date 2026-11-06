@@ -95,8 +95,9 @@ jobs:
         with:
           python-version: "3.12"
 
-      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
+          version: "0.13.5"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
@@ -108,7 +109,8 @@ jobs:
 
       - name: Install Valkyrie
         run: |
-          uv tool install --force "git+https://github.com/vals-ai/Valkyrie.git@${VALKYRIE_REF}"
+          uv tool install --force --exclude-newer "7 days" --exclude-newer-package certifi=false \
+            "git+https://github.com/vals-ai/Valkyrie.git@${VALKYRIE_REF}"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Configure Valkyrie SDK
