@@ -17,6 +17,16 @@ on:
         required: false
         default: ''
         type: string
+      pre_push_command:
+        description: 'Command to run after committing and before pushing direct updates'
+        required: false
+        default: ''
+        type: string
+      setup_uv:
+        description: 'Install uv for the pre-push command'
+        required: false
+        default: false
+        type: boolean
       pr_title:
         description: 'Title for the submodule update PR'
         required: true
@@ -106,12 +116,17 @@ jobs:
       - name: Advance each submodule to latest remote HEAD
         run: git submodule update --remote
 
+      - name: Set up uv
+        if: inputs.direct_push_branch != '' && inputs.setup_uv
+        uses: astral-sh/setup-uv@v7
+
       - name: Push submodule updates directly
         if: inputs.direct_push_branch != ''
         env:
           COMMIT_MESSAGE: ${{ inputs.commit_message }}
           DIRECT_PUSH_BRANCH: ${{ inputs.direct_push_branch }}
           DIRECT_PUSH_SSH_KEY: ${{ secrets.DIRECT_PUSH_SSH_KEY }}
+          PRE_PUSH_COMMAND: ${{ inputs.pre_push_command }}
         run: |
           set -euo pipefail
           git add --update
@@ -123,6 +138,10 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "$COMMIT_MESSAGE"
+
+          if [[ -n "$PRE_PUSH_COMMAND" ]]; then
+            bash -e -o pipefail -c "$PRE_PUSH_COMMAND"
+          fi
 
           direct_push_key="$RUNNER_TEMP/direct_push_key"
           printf '%s\n' "$DIRECT_PUSH_SSH_KEY" > "$direct_push_key"
