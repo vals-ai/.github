@@ -1,0 +1,120 @@
+--- a/claudecode/github_action_audit.py
++++ b/claudecode/github_action_audit.py
+@@ -26,6 +26,7 @@
+     SUBPROCESS_TIMEOUT
+ )
+ from claudecode.logger import get_logger
++from local_diff import read_diff
+ 
+ logger = get_logger(__name__)
+ 
+@@ -74,11 +75,26 @@
+         response.raise_for_status()
+         pr_data = response.json()
+         
+-        # Get PR files with pagination support
+-        files_url = f"https://api.github.com/repos/{repo_name}/pulls/{pr_number}/files?per_page=100"
+-        response = requests.get(files_url, headers=self.headers)
+-        response.raise_for_status()
+-        files_data = response.json()
++        expected = (os.environ['SECURITY_REVIEW_BASE_SHA'], os.environ['SECURITY_REVIEW_HEAD_SHA'])
++        if (pr_data['base']['sha'], pr_data['head']['sha']) != expected:
++            raise ValueError('PR revision changed; start a new review')
++
++        files_data = []
++        page = 1
++        while True:
++            files_url = f"{pr_url}/files?per_page=100&page={page}"
++            response = requests.get(files_url, headers=self.headers, timeout=60)
++            response.raise_for_status()
++            batch = response.json()
++            files_data.extend(batch)
++            if not batch or len(files_data) > pr_data['changed_files']:
++                break
++            if 'next' not in response.links:
++                break
++            page += 1
++        names = [item['filename'] for item in files_data]
++        if len(names) != pr_data['changed_files'] or len(set(names)) != len(names):
++            raise ValueError('PR file inventory is incomplete; review stopped')
+         
+         return {
+             'number': pr_data['number'],
+@@ -127,13 +143,16 @@
+             Complete PR diff in unified format
+         """
+         url = f"https://api.github.com/repos/{repo_name}/pulls/{pr_number}"
+-        headers = dict(self.headers)
+-        headers['Accept'] = 'application/vnd.github.diff'
+-        
+-        response = requests.get(url, headers=headers)
++        response = requests.get(url, headers=self.headers, timeout=60)
+         response.raise_for_status()
+-        
+-        return self._filter_generated_files(response.text)
++        current = response.json()
++        base = os.environ['SECURITY_REVIEW_BASE_SHA']
++        head = os.environ['SECURITY_REVIEW_HEAD_SHA']
++        if (current['base']['sha'], current['head']['sha']) != (base, head):
++            raise ValueError('PR revision changed; start a new review')
++
++        difference = read_diff(Path(os.environ['REPO_PATH']), base, head)
++        return self._filter_generated_files(difference)
+     
+     def _is_excluded(self, filepath: str) -> bool:
+         """Check if a file should be excluded based on directory patterns."""
+@@ -387,7 +406,11 @@
+         raise ConfigurationError(f'Failed to initialize GitHub client: {str(e)}')
+     
+     try:
+-        claude_runner = SimpleClaudeRunner()
++        timeout_text = os.environ.get('CLAUDE_TIMEOUT', str(SUBPROCESS_TIMEOUT // 60))
++        if re.fullmatch(r'[0-9]+', timeout_text) is None or not 1 <= int(timeout_text) <= 40:
++            raise ValueError('Scanner timeout must be an integer from 1 to 40 minutes')
++
++        claude_runner = SimpleClaudeRunner(timeout_minutes=int(timeout_text))
+     except Exception as e:
+         raise ConfigurationError(f'Failed to initialize Claude runner: {str(e)}')
+         
+--- a/action.yml
++++ b/action.yml
+@@ -217,7 +217,7 @@
+         export CLAUDE_TIMEOUT="$CLAUDECODE_TIMEOUT"
+         
+         # Run ClaudeCode audit with verbose debugging
+-        export REPO_PATH=$(pwd)
++        export REPO_PATH="${SECURITY_REVIEW_REPO_PATH:?Review source path is required}"
+         cd "$ACTION_PATH"
+         
+         # Enable verbose debugging
+--- a/scripts/comment-pr-findings.js
++++ b/scripts/comment-pr-findings.js
+@@ -104,8 +104,26 @@
+       return;
+     }
+     
+-    // Get the PR diff to map file lines to diff positions
+-    const prFiles = ghApi(`/repos/${context.repo.owner}/${context.repo.repo}/pulls/${context.issue.number}/files?per_page=100`);
++    const prEndpoint = `/repos/${context.repo.owner}/${context.repo.repo}/pulls/${context.issue.number}`;
++    const current = ghApi(prEndpoint);
++    if (current.head.sha !== context.payload.pull_request.head.sha ||
++        current.base.sha !== context.payload.pull_request.base.sha) {
++      throw new Error('PR revision changed; start a new review');
++    }
++    const prFiles = [];
++    let page = 1;
++    while (prFiles.length < current.changed_files) {
++      const batch = ghApi(`${prEndpoint}/files?per_page=100&page=${page}`);
++      if (!Array.isArray(batch) || batch.length === 0) {
++        throw new Error('PR file inventory is incomplete; comments stopped');
++      }
++      prFiles.push(...batch);
++      page += 1;
++    }
++    if (prFiles.length !== current.changed_files ||
++        new Set(prFiles.map(file => file.filename)).size !== prFiles.length) {
++      throw new Error('PR file inventory is incomplete; comments stopped');
++    }
+     
+     // Create a map of file paths to their diff information
+     const fileMap = {};

@@ -1,0 +1,2 @@
+# Preserve whitespace in the pinned upstream patch context.
+/.github/security-review/local-diff.patch -whitespace
