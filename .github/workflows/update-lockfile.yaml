@@ -36,13 +36,28 @@ jobs:
         id: current-pin
         run: |
           REF=$(sed -n 's|.*create-benchmark-service\.git@\([^"]*\).*|\1|p' pyproject.toml | head -1)
-          echo "ref=${REF:-}" >> "$GITHUB_OUTPUT"
+          REPOSITORY=https://github.com/vals-ai/create-benchmark-service.git
+          TAG_PREFIX=v
+          VALKYRIE_REF=$(sed -n 's|^create-benchmark-service = {.*vals-ai/Valkyrie\.git.*tag = "\(cbs-v[^"]*\)".*|\1|p' pyproject.toml | head -1)
+          if [ -n "$VALKYRIE_REF" ]; then
+            REF=$VALKYRIE_REF
+            REPOSITORY=https://github.com/vals-ai/Valkyrie.git
+            TAG_PREFIX=cbs-v
+          fi
+          {
+            echo "ref=${REF:-}"
+            echo "repository=$REPOSITORY"
+            echo "tag-prefix=$TAG_PREFIX"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Find latest create-benchmark-service tag
         id: latest-tag
+        env:
+          REPOSITORY: ${{ steps.current-pin.outputs.repository }}
+          TAG_PREFIX: ${{ steps.current-pin.outputs.tag-prefix }}
         run: |
           TAG=$(git ls-remote --tags --sort=-version:refname \
-            https://github.com/vals-ai/create-benchmark-service.git 'refs/tags/v*' \
+            "$REPOSITORY" "refs/tags/${TAG_PREFIX}*" \
             | grep -v '\^{}$' | head -1 | awk '{print $2}' | sed 's|refs/tags/||')
           if [ -z "$TAG" ]; then
             echo "::warning::No tags found for create-benchmark-service"
@@ -53,7 +68,7 @@ jobs:
 
       - name: Build changelog
         id: changelog
-        if: steps.latest-tag.outputs.tag != ''
+        if: steps.latest-tag.outputs.tag != '' && steps.current-pin.outputs.tag-prefix == 'v'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
           CURRENT_REF: ${{ steps.current-pin.outputs.ref }}
@@ -104,6 +119,7 @@ jobs:
           TAG: ${{ steps.latest-tag.outputs.tag }}
         run: |
           sed -i "s|create-benchmark-service\.git@[^\"]*|create-benchmark-service.git@${TAG}|" pyproject.toml
+          sed -i "/^create-benchmark-service = /s|tag = \"cbs-v[^\"]*\"|tag = \"${TAG}\"|" pyproject.toml
 
       - name: Update lockfile
         if: steps.latest-tag.outputs.tag != ''

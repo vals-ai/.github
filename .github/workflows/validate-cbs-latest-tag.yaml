@@ -26,9 +26,8 @@ jobs:
           set -euo pipefail
 
           dependency_name="create-benchmark-service"
-          repository_url="https://github.com/vals-ai/create-benchmark-service.git"
 
-          cbs_requirement="$(
+          IFS=$'\t' read -r cbs_requirement repository_url <<<"$(
             uv run --no-project python - <<'PY'
           import tomllib
           from pathlib import Path
@@ -51,24 +50,32 @@ jobs:
               )[0]
               if not ref:
                   raise SystemExit(f"{dependency_name} lock entry has no git ref")
-              print(f"{dependency_name} @ git+{repository_url}@{ref}")
+              subdirectory = query.get("subdirectory", [""])[0]
+              suffix = f"#subdirectory={subdirectory}" if subdirectory else ""
+              print(f"{dependency_name} @ git+{repository_url}@{ref}{suffix}\t{repository_url}")
               break
           else:
               raise SystemExit(f"{dependency_name} was not found in uv.lock")
           PY
           )"
 
+          # The framework moved into vals-ai/Valkyrie, which tags its releases cbs-v<version>.
+          tag_prefix="v"
+          case "${repository_url,,}" in
+            https://github.com/vals-ai/valkyrie | https://github.com/vals-ai/valkyrie.git) tag_prefix="cbs-v" ;;
+          esac
+
           uv venv .cbs-check-venv --python 3.12
           uv pip install --python .cbs-check-venv/bin/python --no-deps "${cbs_requirement}"
 
           latest_tag="$(
             git ls-remote --refs --tags --sort=-version:refname \
-              "${repository_url}" "refs/tags/v*" \
+              "${repository_url}" "refs/tags/${tag_prefix}*" \
               | awk '!tag { tag = $2 } END { sub("refs/tags/", "", tag); print tag }'
           )"
 
           if [ -z "${latest_tag}" ]; then
-            echo "::error::No v* tags found for ${repository_url}"
+            echo "::error::No ${tag_prefix}* tags found for ${repository_url}"
             exit 1
           fi
 
@@ -80,12 +87,12 @@ jobs:
           print(importlib.metadata.version(sys.argv[1]))
           PY
           )"
-          latest_version="${latest_tag#v}"
+          latest_version="${latest_tag#"${tag_prefix}"}"
 
           echo "Installed ${dependency_name} version: ${installed_version}"
           echo "Latest ${dependency_name} tag: ${latest_tag}"
 
           if [ "${installed_version}" != "${latest_version}" ]; then
-            echo "::error::create-benchmark-service package is required to be latest, run 'uv add \"create-benchmark-service @ git+https://github.com/vals-ai/create-benchmark-service.git@${latest_tag}\"' to update the package and try again."
+            echo "::error::create-benchmark-service is required to be the latest release (${latest_tag}). Move its source to that tag, run 'uv lock', and try again."
             exit 1
           fi
