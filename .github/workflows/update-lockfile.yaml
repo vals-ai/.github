@@ -38,9 +38,22 @@ jobs:
           REF=$(sed -n 's|.*create-benchmark-service\.git@\([^"]*\).*|\1|p' pyproject.toml | head -1)
           REPOSITORY=https://github.com/vals-ai/create-benchmark-service.git
           TAG_PREFIX=v
-          SOURCE=$(grep -m1 '^create-benchmark-service = {' pyproject.toml || true)
-          if grep -qiE 'github\.com/vals-ai/valkyrie(\.git)?"' <<<"$SOURCE"; then
-            REF=$(sed -n 's|.*tag = "\([^"]*\)".*|\1|p' <<<"$SOURCE")
+          VALKYRIE_REF=$(uv run --no-project --python 3.12 python - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          source = project.get("tool", {}).get("uv", {}).get("sources", {}).get("create-benchmark-service")
+          if isinstance(source, dict):
+              git = source.get("git", "").lower().removesuffix(".git")
+              if git == "https://github.com/vals-ai/valkyrie":
+                  if not source.get("tag"):
+                      raise SystemExit("Set a cbs-v tag on the create-benchmark-service source in pyproject.toml.")
+                  print(source["tag"])
+          PY
+          )
+          if [ -n "$VALKYRIE_REF" ]; then
+            REF=$VALKYRIE_REF
             REPOSITORY=https://github.com/vals-ai/Valkyrie.git
             TAG_PREFIX=cbs-v
           fi
@@ -120,7 +133,20 @@ jobs:
           TAG_PREFIX: ${{ steps.current-pin.outputs.tag-prefix }}
         run: |
           if [ "$TAG_PREFIX" = cbs-v ]; then
-            sed -i "/^create-benchmark-service = /s|tag = \"[^\"]*\"|tag = \"${TAG}\"|" pyproject.toml
+            uv run --no-project --python 3.12 --with 'tomlkit==0.13.3' python - <<'PY'
+          import os
+          from pathlib import Path
+
+          import tomlkit
+
+          path = Path("pyproject.toml")
+          project = tomlkit.parse(path.read_text(encoding="utf-8"))
+          source = project["tool"]["uv"]["sources"]["create-benchmark-service"]
+          tag = os.environ["TAG"]
+          if source["tag"] != tag:
+              source["tag"] = tag
+              path.write_text(tomlkit.dumps(project), encoding="utf-8")
+          PY
           else
             sed -i "s|create-benchmark-service\.git@[^\"]*|create-benchmark-service.git@${TAG}|" pyproject.toml
           fi

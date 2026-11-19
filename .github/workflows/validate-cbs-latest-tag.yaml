@@ -27,7 +27,7 @@ jobs:
 
           dependency_name="create-benchmark-service"
 
-          IFS=$'\t' read -r cbs_requirement repository_url <<<"$(
+          cbs_source="$(
             uv run --no-project python - <<'PY'
           import tomllib
           from pathlib import Path
@@ -41,9 +41,23 @@ jobs:
                   continue
               source_git = package["source"]["git"]
               split_url = urlsplit(source_git)
-              repository_url = urlunsplit(
+              locked_repository = urlunsplit(
                   (split_url.scheme, split_url.netloc, split_url.path, "", "")
-              )
+              ).lower().removesuffix(".git")
+              repositories = {
+                  "https://github.com/vals-ai/create-benchmark-service": (
+                      "https://github.com/vals-ai/create-benchmark-service.git", "v"
+                  ),
+                  "https://github.com/vals-ai/valkyrie": (
+                      "https://github.com/vals-ai/Valkyrie.git", "cbs-v"
+                  ),
+              }
+              if locked_repository not in repositories:
+                  raise SystemExit(
+                      f"{dependency_name} must come from vals-ai/create-benchmark-service "
+                      "or vals-ai/Valkyrie. Update its source and run 'uv lock'."
+                  )
+              repository_url, tag_prefix = repositories[locked_repository]
               query = parse_qs(split_url.query)
               ref = split_url.fragment or query.get(
                   "tag", query.get("rev", query.get("branch", [""]))
@@ -52,18 +66,14 @@ jobs:
                   raise SystemExit(f"{dependency_name} lock entry has no git ref")
               subdirectory = query.get("subdirectory", [""])[0]
               suffix = f"#subdirectory={subdirectory}" if subdirectory else ""
-              print(f"{dependency_name} @ git+{repository_url}@{ref}{suffix}\t{repository_url}")
+              print(f"{repository_url}\t{tag_prefix}\t{dependency_name} @ git+{repository_url}@{ref}{suffix}")
               break
           else:
               raise SystemExit(f"{dependency_name} was not found in uv.lock")
           PY
           )"
 
-          # The framework moved into vals-ai/Valkyrie, which tags its releases cbs-v<version>.
-          tag_prefix="v"
-          case "${repository_url,,}" in
-            https://github.com/vals-ai/valkyrie | https://github.com/vals-ai/valkyrie.git) tag_prefix="cbs-v" ;;
-          esac
+          IFS=$'\t' read -r repository_url tag_prefix cbs_requirement <<<"$cbs_source"
 
           uv venv .cbs-check-venv --python 3.12
           uv pip install --python .cbs-check-venv/bin/python --no-deps "${cbs_requirement}"
