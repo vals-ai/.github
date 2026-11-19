@@ -38,9 +38,9 @@ jobs:
           REF=$(sed -n 's|.*create-benchmark-service\.git@\([^"]*\).*|\1|p' pyproject.toml | head -1)
           REPOSITORY=https://github.com/vals-ai/create-benchmark-service.git
           TAG_PREFIX=v
-          VALKYRIE_REF=$(sed -n 's|^create-benchmark-service = {.*vals-ai/Valkyrie\.git.*tag = "\(cbs-v[^"]*\)".*|\1|p' pyproject.toml | head -1)
-          if [ -n "$VALKYRIE_REF" ]; then
-            REF=$VALKYRIE_REF
+          SOURCE=$(grep -m1 '^create-benchmark-service = {' pyproject.toml || true)
+          if grep -qiE 'github\.com/vals-ai/valkyrie(\.git)?"' <<<"$SOURCE"; then
+            REF=$(sed -n 's|.*tag = "\([^"]*\)".*|\1|p' <<<"$SOURCE")
             REPOSITORY=https://github.com/vals-ai/Valkyrie.git
             TAG_PREFIX=cbs-v
           fi
@@ -117,9 +117,13 @@ jobs:
         if: steps.latest-tag.outputs.tag != ''
         env:
           TAG: ${{ steps.latest-tag.outputs.tag }}
+          TAG_PREFIX: ${{ steps.current-pin.outputs.tag-prefix }}
         run: |
-          sed -i "s|create-benchmark-service\.git@[^\"]*|create-benchmark-service.git@${TAG}|" pyproject.toml
-          sed -i "/^create-benchmark-service = /s|tag = \"cbs-v[^\"]*\"|tag = \"${TAG}\"|" pyproject.toml
+          if [ "$TAG_PREFIX" = cbs-v ]; then
+            sed -i "/^create-benchmark-service = /s|tag = \"[^\"]*\"|tag = \"${TAG}\"|" pyproject.toml
+          else
+            sed -i "s|create-benchmark-service\.git@[^\"]*|create-benchmark-service.git@${TAG}|" pyproject.toml
+          fi
 
       - name: Update lockfile
         if: steps.latest-tag.outputs.tag != ''
