@@ -36,13 +36,41 @@ jobs:
         id: current-pin
         run: |
           REF=$(sed -n 's|.*create-benchmark-service\.git@\([^"]*\).*|\1|p' pyproject.toml | head -1)
-          echo "ref=${REF:-}" >> "$GITHUB_OUTPUT"
+          REPOSITORY=https://github.com/vals-ai/create-benchmark-service.git
+          TAG_PREFIX=v
+          VALKYRIE_REF=$(uv run --no-project --python 3.12 python - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          source = project.get("tool", {}).get("uv", {}).get("sources", {}).get("create-benchmark-service")
+          if isinstance(source, dict):
+              git = source.get("git", "").lower().removesuffix(".git")
+              if git == "https://github.com/vals-ai/valkyrie":
+                  if not source.get("tag"):
+                      raise SystemExit("Set a cbs-v tag on the create-benchmark-service source in pyproject.toml.")
+                  print(source["tag"])
+          PY
+          )
+          if [ -n "$VALKYRIE_REF" ]; then
+            REF=$VALKYRIE_REF
+            REPOSITORY=https://github.com/vals-ai/Valkyrie.git
+            TAG_PREFIX=cbs-v
+          fi
+          {
+            echo "ref=${REF:-}"
+            echo "repository=$REPOSITORY"
+            echo "tag-prefix=$TAG_PREFIX"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Find latest create-benchmark-service tag
         id: latest-tag
+        env:
+          REPOSITORY: ${{ steps.current-pin.outputs.repository }}
+          TAG_PREFIX: ${{ steps.current-pin.outputs.tag-prefix }}
         run: |
           TAG=$(git ls-remote --tags --sort=-version:refname \
-            https://github.com/vals-ai/create-benchmark-service.git 'refs/tags/v*' \
+            "$REPOSITORY" "refs/tags/${TAG_PREFIX}*" \
             | grep -v '\^{}$' | head -1 | awk '{print $2}' | sed 's|refs/tags/||')
           if [ -z "$TAG" ]; then
             echo "::warning::No tags found for create-benchmark-service"
@@ -53,7 +81,7 @@ jobs:
 
       - name: Build changelog
         id: changelog
-        if: steps.latest-tag.outputs.tag != ''
+        if: steps.latest-tag.outputs.tag != '' && steps.current-pin.outputs.tag-prefix == 'v'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
           CURRENT_REF: ${{ steps.current-pin.outputs.ref }}
@@ -102,8 +130,26 @@ jobs:
         if: steps.latest-tag.outputs.tag != ''
         env:
           TAG: ${{ steps.latest-tag.outputs.tag }}
+          TAG_PREFIX: ${{ steps.current-pin.outputs.tag-prefix }}
         run: |
-          sed -i "s|create-benchmark-service\.git@[^\"]*|create-benchmark-service.git@${TAG}|" pyproject.toml
+          if [ "$TAG_PREFIX" = cbs-v ]; then
+            uv run --no-project --python 3.12 --with 'tomlkit==0.13.3' python - <<'PY'
+          import os
+          from pathlib import Path
+
+          import tomlkit
+
+          path = Path("pyproject.toml")
+          project = tomlkit.parse(path.read_text(encoding="utf-8"))
+          source = project["tool"]["uv"]["sources"]["create-benchmark-service"]
+          tag = os.environ["TAG"]
+          if source["tag"] != tag:
+              source["tag"] = tag
+              path.write_text(tomlkit.dumps(project), encoding="utf-8")
+          PY
+          else
+            sed -i "s|create-benchmark-service\.git@[^\"]*|create-benchmark-service.git@${TAG}|" pyproject.toml
+          fi
 
       - name: Update lockfile
         if: steps.latest-tag.outputs.tag != ''

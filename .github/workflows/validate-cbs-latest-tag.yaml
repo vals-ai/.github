@@ -26,9 +26,8 @@ jobs:
           set -euo pipefail
 
           dependency_name="create-benchmark-service"
-          repository_url="https://github.com/vals-ai/create-benchmark-service.git"
 
-          cbs_requirement="$(
+          cbs_source="$(
             uv run --no-project python - <<'PY'
           import tomllib
           from pathlib import Path
@@ -42,33 +41,51 @@ jobs:
                   continue
               source_git = package["source"]["git"]
               split_url = urlsplit(source_git)
-              repository_url = urlunsplit(
+              locked_repository = urlunsplit(
                   (split_url.scheme, split_url.netloc, split_url.path, "", "")
-              )
+              ).lower().removesuffix(".git")
+              repositories = {
+                  "https://github.com/vals-ai/create-benchmark-service": (
+                      "https://github.com/vals-ai/create-benchmark-service.git", "v"
+                  ),
+                  "https://github.com/vals-ai/valkyrie": (
+                      "https://github.com/vals-ai/Valkyrie.git", "cbs-v"
+                  ),
+              }
+              if locked_repository not in repositories:
+                  raise SystemExit(
+                      f"{dependency_name} must come from vals-ai/create-benchmark-service "
+                      "or vals-ai/Valkyrie. Update its source and run 'uv lock'."
+                  )
+              repository_url, tag_prefix = repositories[locked_repository]
               query = parse_qs(split_url.query)
               ref = split_url.fragment or query.get(
                   "tag", query.get("rev", query.get("branch", [""]))
               )[0]
               if not ref:
                   raise SystemExit(f"{dependency_name} lock entry has no git ref")
-              print(f"{dependency_name} @ git+{repository_url}@{ref}")
+              subdirectory = query.get("subdirectory", [""])[0]
+              suffix = f"#subdirectory={subdirectory}" if subdirectory else ""
+              print(f"{repository_url}\t{tag_prefix}\t{dependency_name} @ git+{repository_url}@{ref}{suffix}")
               break
           else:
               raise SystemExit(f"{dependency_name} was not found in uv.lock")
           PY
           )"
 
+          IFS=$'\t' read -r repository_url tag_prefix cbs_requirement <<<"$cbs_source"
+
           uv venv .cbs-check-venv --python 3.12
           uv pip install --python .cbs-check-venv/bin/python --no-deps "${cbs_requirement}"
 
           latest_tag="$(
             git ls-remote --refs --tags --sort=-version:refname \
-              "${repository_url}" "refs/tags/v*" \
+              "${repository_url}" "refs/tags/${tag_prefix}*" \
               | awk '!tag { tag = $2 } END { sub("refs/tags/", "", tag); print tag }'
           )"
 
           if [ -z "${latest_tag}" ]; then
-            echo "::error::No v* tags found for ${repository_url}"
+            echo "::error::No ${tag_prefix}* tags found for ${repository_url}"
             exit 1
           fi
 
@@ -80,12 +97,12 @@ jobs:
           print(importlib.metadata.version(sys.argv[1]))
           PY
           )"
-          latest_version="${latest_tag#v}"
+          latest_version="${latest_tag#"${tag_prefix}"}"
 
           echo "Installed ${dependency_name} version: ${installed_version}"
           echo "Latest ${dependency_name} tag: ${latest_tag}"
 
           if [ "${installed_version}" != "${latest_version}" ]; then
-            echo "::error::create-benchmark-service package is required to be latest, run 'uv add \"create-benchmark-service @ git+https://github.com/vals-ai/create-benchmark-service.git@${latest_tag}\"' to update the package and try again."
+            echo "::error::create-benchmark-service is required to be the latest release (${latest_tag}). Move its source to that tag, run 'uv lock', and try again."
             exit 1
           fi
